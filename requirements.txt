@@ -1,0 +1,17 @@
+# Exakt gepinnt auf die zur Bauzeit aktuellen Stände (2026-08-22), danach unverändert,
+# siehe SPEC.md §2. Alle Pakete sind für linux/aarch64 als Wheel verfügbar (live gegen
+# PyPI geprüft), kein Compiler nötig - einzige Ausnahme ist die Transitivabhängigkeit
+# jstyleson (über extruct), die nur als Source-Distribution vorliegt, aber reines
+# Python ohne C-Erweiterung ist und daher ohne Compiler baut.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.4
+requests==2.34.2
+recipe-scrapers==15.12.0
+extruct==0.18.0
+trafilatura==2.2.0
+yt-dlp==2026.8.19
+# Nachgetragen für den Uploadweg (A12, SPEC.md §2/§6), Stände vom 2026-08-23. Beide
+# sind reine py3-none-any-Wheels, also auch auf arm64 ohne Compiler installierbar.
+pypdf==6.16.1
+python-multipart==0.0.32
