@@ -104,16 +104,16 @@ appears in a file of this repository.
 
 ## 6. Behaviour of the stage as a whole
 
-- [ ] 6.1 Verify with a test through `app._attach_image` that an import stays successful,
+- [x] 6.1 Verify with a test through `app._attach_image` that an import stays successful,
   `done` and untagged when every candidate fails, including a transport error, a `429` and
   an unusable answer in the same walk.
-- [ ] 6.2 Verify with a test that a picture from a fallback candidate is uploaded and
+- [x] 6.2 Verify with a test that a picture from a fallback candidate is uploaded and
   tagged `ki-bild` exactly like one from the head candidate.
-- [ ] 6.3 Verify with a test that a recipe that already has an image, and a repeated import
+- [x] 6.3 Verify with a test that a recipe that already has an image, and a repeated import
   of a known source, contact no candidate at all.
-- [ ] 6.4 Verify with a test that `IMAGE_ENABLED=false` short-circuits before the chain is
+- [x] 6.4 Verify with a test that `IMAGE_ENABLED=false` short-circuits before the chain is
   even read.
-- [ ] 6.5 Verify with a test that Pollinations is called without an `Authorization` header
+- [x] 6.5 Verify with a test that Pollinations is called without an `Authorization` header
   when no Pollinations token is configured, while a Gemini candidate in the same chain is
   called with the key.
 

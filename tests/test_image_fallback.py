@@ -7,16 +7,20 @@ nie (DESIGN.md §12).
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from unittest.mock import MagicMock
 
 import pytest
 
+import app as app_module
 import config
 import image
 import image_chain
+from classify import normalize_url, url_hash
 from conftest import FIXTURES_DIR
+from schema import Recipe
 
 JPEG_BYTES = (FIXTURES_DIR / "document_rezeptfoto.jpg").read_bytes()
 JPEG_B64 = base64.b64encode(JPEG_BYTES).decode("ascii")
@@ -331,3 +335,142 @@ def test_protokoll_nennt_den_kandidaten_und_keinen_schluessel(monkeypatch, kette
     assert PRO[1] in caplog.text  # der übersprungene Kandidat
     assert FLASH[1] in caplog.text  # der liefernde Kandidat
     assert "test-platzhalter-llm-key" not in caplog.text
+
+
+# --- Aufgabe 6: die Stufe im Ablauf, mit echter Kette ---------------------------------
+#
+# Anders als die Ablauftests in `test_image.py` wird hier `image.generate` **nicht**
+# ersetzt: der Import läuft durch die echte Kette, gestellt sind nur die HTTP-Antworten.
+
+
+def _youtube_import(monkeypatch, recipe):
+    """Der YouTube-Weg als kürzester Vertreter aller Wege über `create_from_jsonld`:
+    dort trägt das Rezept nie ein Bild von der Quelle."""
+    monkeypatch.setattr(app_module, "classify", lambda url: "youtube")
+    monkeypatch.setattr(app_module.youtube, "fetch", lambda url: MagicMock(text="Rezepttext"))
+    monkeypatch.setattr(app_module, "extract_recipe", lambda text, url: recipe)
+    monkeypatch.setattr(
+        app_module.mealie_client, "create_from_jsonld", MagicMock(return_value="kartoffelsuppe")
+    )
+    monkeypatch.setattr(
+        app_module.mealie_client, "recipe_link", lambda slug: f"http://mealie.local/g/home/r/{slug}"
+    )
+    monkeypatch.setattr(app_module.ha_notify, "notify", MagicMock())
+
+
+def _recipe():
+    return Recipe(
+        name="Kartoffelsuppe mit Majoran",
+        recipeIngredient=["800 g Kartoffeln", "1 l Gemüsebrühe"],
+        recipeInstructions=["Kartoffeln schälen.", "In der Brühe garen."],
+    )
+
+
+URL = "https://www.youtube.com/watch?v=abc12345678"
+
+
+def test_gescheiterte_kette_laesst_den_import_erfolgreich(monkeypatch, isolated_store, kette):
+    """Aufgabe 6.1: drei verschiedene Fehlschläge in einem Gang, und der Import ist
+    trotzdem fertig, `done` und ohne das Bild-Tag."""
+    _youtube_import(monkeypatch, _recipe())
+    monkeypatch.setattr(
+        image.requests,
+        "post",
+        MagicMock(
+            side_effect=[
+                image.requests.RequestException("kein Netz"),
+                _Response(status_code=429, text="quota"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        image.requests, "get", MagicMock(return_value=_Response(content=b"kein Bild"))
+    )
+    set_image = MagicMock()
+    monkeypatch.setattr(app_module.mealie_client, "set_image", set_image)
+    set_tags = MagicMock()
+    monkeypatch.setattr(app_module.mealie_client, "set_tags", set_tags)
+
+    asyncio.run(app_module._process_import(URL))
+
+    set_image.assert_not_called()
+    set_tags.assert_called_once_with("kartoffelsuppe", ["auto-import"])
+    assert isolated_store.find(url_hash(normalize_url(URL)))["status"] == "done"
+
+
+def test_bild_vom_rueckfall_wird_wie_jedes_andere_behandelt(monkeypatch, isolated_store, kette):
+    """Aufgabe 6.2: Upload und Tag sind dieselben, egal welcher Kandidat geliefert hat."""
+    _youtube_import(monkeypatch, _recipe())
+    monkeypatch.setattr(
+        image.requests,
+        "post",
+        MagicMock(
+            side_effect=[
+                _Response(status_code=429, text="quota"),
+                _Response(status_code=429, text="quota"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(image.requests, "get", MagicMock(return_value=_Response(content=JPEG_BYTES)))
+    set_image = MagicMock()
+    monkeypatch.setattr(app_module.mealie_client, "set_image", set_image)
+    set_tags = MagicMock()
+    monkeypatch.setattr(app_module.mealie_client, "set_tags", set_tags)
+
+    asyncio.run(app_module._process_import(URL))
+
+    set_image.assert_called_once_with("kartoffelsuppe", JPEG_BYTES)
+    set_tags.assert_called_once_with("kartoffelsuppe", ["auto-import", app_module.IMAGE_TAG])
+
+
+def test_zweiter_import_derselben_quelle_spricht_keinen_kandidaten_an(
+    monkeypatch, isolated_store, kette
+):
+    """Aufgabe 6.3, zweite Hälfte: die Wiederholung antwortet mit dem alten Link."""
+    _youtube_import(monkeypatch, _recipe())
+    post = MagicMock(return_value=_bild_antwort())
+    monkeypatch.setattr(image.requests, "post", post)
+    monkeypatch.setattr(image.requests, "get", MagicMock())
+    monkeypatch.setattr(app_module.mealie_client, "set_image", MagicMock())
+    monkeypatch.setattr(app_module.mealie_client, "set_tags", MagicMock())
+    monkeypatch.setattr(app_module.mealie_client, "recipe_exists", lambda slug: True)
+
+    asyncio.run(app_module._process_import(URL))
+    assert post.call_count == 1
+
+    asyncio.run(app_module._process_import(URL))
+    assert post.call_count == 1
+
+
+def test_abgeschaltete_stufe_liest_die_kette_gar_nicht(monkeypatch):
+    """Aufgabe 6.4: IMAGE_ENABLED=false hält vor der Kette, nicht erst vor dem Aufruf."""
+    monkeypatch.setattr(config, "IMAGE_ENABLED", False)
+    kandidaten = MagicMock()
+    monkeypatch.setattr(image_chain, "candidates", kandidaten)
+    post = MagicMock()
+    monkeypatch.setattr(image.requests, "post", post)
+
+    assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) is None
+
+    kandidaten.assert_not_called()
+    post.assert_not_called()
+
+
+def test_der_schluessel_geht_nur_an_den_anbieter_dem_er_gehoert(monkeypatch, kette):
+    """Aufgabe 6.5: in **einem** Gang bekommt Gemini den Schlüssel und Pollinations
+    keinen - das ist der Leckweg, den die Aufteilung je Anbieter verhindert."""
+    monkeypatch.setitem(
+        config.IMAGE_ENDPOINTS, "gemini", ("https://gemini.example", "test-platzhalter-llm-key")
+    )
+    post = _posts(
+        monkeypatch,
+        _Response(status_code=429, text="quota"),
+        _Response(status_code=429, text="quota"),
+    )
+    get = _gets(monkeypatch, _Response(content=JPEG_BYTES))
+
+    assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) == JPEG_BYTES
+
+    for aufruf in post.call_args_list:
+        assert aufruf.kwargs["headers"]["x-goog-api-key"] == "test-platzhalter-llm-key"
+    assert get.call_args.kwargs["headers"] == {}
