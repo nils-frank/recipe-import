@@ -118,3 +118,23 @@ NAMING_USER_PROMPT_TEMPLATE = (
     "Zubereitung:\n"
     "{instructions}"
 )
+
+
+# Bildstufe (Feature A19). Als einziger Prompt hier auf Englisch: seine Ausgabe ist ein
+# Bild ohne Text, es geht also nichts Deutsches verloren, und Bildmodelle sind auf
+# englische Bildunterschriften trainiert. Der eingesetzte Rezeptinhalt (deutscher
+# Gerichtname, deutsche Zutaten) bleibt unverändert stehen - das Modell braucht ihn als
+# Beschreibung, nicht als Sprache.
+#
+# Ein Satz, nicht mehr. Die erste Fassung zählte über 761 Zeichen lang auf, was im Bild
+# nicht vorkommen darf (Text, Logos, Hände, Besteck), und das Bildmodell lieferte in der
+# Probe vom 2026-09-20 genau das: einen leeren Teller mit gekritzelter Pseudo-Schrift.
+# Derselbe Rezeptinhalt in einem kompakten Satz ergab ein brauchbares Foto des Gerichts.
+# Die Zubereitungsschritte stehen deshalb gar nicht mehr im Prompt - sie verlängern ihn,
+# ohne das Aussehen des Tellers zu ändern. Von den Verboten bleiben die zwei, die eine
+# Mealie-Kachel wirklich unbrauchbar machen: eingebrannter Text und Logos.
+IMAGE_GENERATION_PROMPT_TEMPLATE = (
+    "Food photography of the finished dish {name}, made with {ingredients}, "
+    "plated on a neutral surface in soft daylight, seen slightly from above, "
+    "no text, no logo"
+)

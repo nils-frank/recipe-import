@@ -3,6 +3,12 @@
 Dient der Idempotenz: dieselbe URL löst höchstens einen Mealie-Aufruf aus (§12,
 Test 5), und ein `pending`-Eintrag übersteht einen Neustart des Containers, weil
 `app.py` ihn beim Start erneut über `pending()` einsammelt (§6, `src/app.py`).
+
+Seit A20 (openspec/changes/add-transient-retry-queue) trägt dieselbe Tabelle die
+Warteschlange für vorübergehend gescheiterte Importe: der Status `queued` mit
+`due_at`, `attempts` und `payload`. Bewusst keine zweite Tabelle - jede bestehende
+Zusicherung (der atomare Claim in `start()`, `_notify_if_done`, die Ratenbegrenzung)
+müsste sonst zwei Tabellen befragen, um den Stand einer Quelle zu kennen.
 """
 from __future__ import annotations
 
@@ -19,14 +25,28 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS imports (
   url_hash   TEXT PRIMARY KEY,
   url        TEXT NOT NULL,
-  status     TEXT NOT NULL,      -- pending | done | failed
+  status     TEXT NOT NULL,      -- pending | queued | done | failed
   slug       TEXT,
   title      TEXT,
   error      TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  due_at     TEXT,
+  payload    TEXT
 );
 """
+
+# Nachtrag der Warteschlangen-Spalten auf einer Datenbank, die vor A20 angelegt wurde
+# (openspec/changes/add-transient-retry-queue). Rein additiv: vorhandene Zeilen behalten
+# ihren Status und bekommen attempts = 0, due_at = NULL, payload = NULL. Eine ältere
+# Fassung des Dienstes ignoriert die Spalten wieder, deshalb braucht es keinen
+# Rückweg - zu einer `queued`-Zeile, die sie nicht versteht, siehe design.md.
+_MIGRATIONS = {
+    "attempts": "ALTER TABLE imports ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    "due_at": "ALTER TABLE imports ADD COLUMN due_at TEXT",
+    "payload": "ALTER TABLE imports ADD COLUMN payload TEXT",
+}
 
 
 @contextmanager
@@ -47,6 +67,11 @@ def _now() -> str:
 def init() -> None:
     with _connect() as conn:
         conn.execute(SCHEMA)
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(imports)")}
+        for column, statement in _MIGRATIONS.items():
+            if column not in existing:
+                log.info("store.init: ergaenze Spalte %s", column)
+                conn.execute(statement)
         conn.commit()
     log.info("store.init: Tabelle imports unter %s bereit", DB_PATH)
 
@@ -98,10 +123,13 @@ def start(url_hash: str, url: str) -> bool:
 
 
 def finish(url_hash: str, slug: str, title: str) -> None:
+    """Endzustand `done`. Räumt zugleich die Warteschlangenfelder ab (A20): ein
+    Eintrag, der aus `queued` heraus fertig geworden ist, trägt sonst eine Fälligkeit
+    weiter, die niemand mehr einlöst."""
     with _connect() as conn:
         conn.execute(
-            "UPDATE imports SET status = 'done', slug = ?, title = ?, error = NULL, "
-            "updated_at = ? WHERE url_hash = ?",
+            "UPDATE imports SET status = 'done', slug = ?, title = ?, error = NULL,"
+            " due_at = NULL, attempts = 0, updated_at = ? WHERE url_hash = ?",
             (slug, title, _now(), url_hash),
         )
         conn.commit()
@@ -109,13 +137,82 @@ def finish(url_hash: str, slug: str, title: str) -> None:
 
 
 def fail(url_hash: str, error: str) -> None:
+    """Endzustand `failed`, endgültig oder nach aufgegebenen Wiederholungen. Räumt die
+    Warteschlangenfelder ab, aus demselben Grund wie `finish()`."""
     with _connect() as conn:
         conn.execute(
-            "UPDATE imports SET status = 'failed', error = ?, updated_at = ? WHERE url_hash = ?",
+            "UPDATE imports SET status = 'failed', error = ?,"
+            " due_at = NULL, attempts = 0, updated_at = ? WHERE url_hash = ?",
             (error, _now(), url_hash),
         )
         conn.commit()
     log.info("store.fail(%s) error=%s -> failed", url_hash, error)
+
+
+def queue(url_hash: str, due_at: str, attempts: int, payload: str | None = None) -> None:
+    """Parkt einen Eintrag als `queued` mit Fälligkeit und Versuchszähler (A20).
+
+    `due_at` ist ein ISO-8601-Zeitstempel in UTC, wie `created_at`/`updated_at` - so
+    vergleicht ihn `due()` als Zeichenkette. `payload` trägt die JSON-Beschreibung
+    aufbewahrter Uploads oder `None` für einen URL-Import.
+
+    Die Zeile existiert an dieser Stelle immer: geparkt wird nur, was zuvor über
+    `start()` oder `claim_due()` als `pending` übernommen wurde."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE imports SET status = 'queued', due_at = ?, attempts = ?, payload = ?,"
+            " error = NULL, updated_at = ? WHERE url_hash = ?",
+            (due_at, attempts, payload, _now(), url_hash),
+        )
+        conn.commit()
+    log.info("store.queue(%s) attempts=%d due_at=%s -> queued", url_hash, attempts, due_at)
+
+
+def due(now: str) -> list[dict]:
+    """Alle `queued`-Einträge, deren Fälligkeit erreicht ist. `now` wird übergeben
+    statt hier gelesen, damit die Zeitplanung ohne Wanduhr prüfbar bleibt (DESIGN.md
+    §12). Älteste Fälligkeit zuerst: eine lange wartende Zeile soll nicht hinter einer
+    gerade erst geparkten zurückstehen."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM imports WHERE status = 'queued' AND due_at IS NOT NULL"
+            " AND due_at <= ? ORDER BY due_at",
+            (now,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def claim_due(url_hash: str) -> bool:
+    """Übernimmt eine fällige Zeile zur Verarbeitung: `queued` -> `pending`, atomar.
+
+    Dasselbe Muster wie `start()` und aus demselben Grund: zwischen `due()` und dem
+    Beginn der Arbeit kann ein erneut geteilter Link dieselbe Zeile berühren. Ein
+    einziges UPDATE mit Statusbedingung und `rowcount` entscheidet, wem sie gehört;
+    `False` heisst "jemand anders hat sie", nicht "Fehler".
+
+    `created_at` bleibt unangetastet - daran hängt `recent_count()`, und ein Versuch
+    ist kein neu angenommener Import (Ratenbegrenzung, DESIGN.md §11)."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE imports SET status = 'pending', updated_at = ?"
+            " WHERE url_hash = ? AND status = 'queued'",
+            (_now(), url_hash),
+        )
+        conn.commit()
+        claimed = cur.rowcount > 0
+    if claimed:
+        log.info("store.claim_due(%s) -> pending", url_hash)
+    else:
+        log.info("store.claim_due(%s) nicht mehr queued, kein zweiter Anlauf", url_hash)
+    return claimed
+
+
+def queued() -> list[dict]:
+    """Alle wartenden Einträge, unabhängig von der Fälligkeit - Grundlage des
+    Aufräumens verwaister Upload-Verzeichnisse beim Start (A20)."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM imports WHERE status = 'queued'").fetchall()
+    return [dict(row) for row in rows]
 
 
 def pending() -> list[dict]:

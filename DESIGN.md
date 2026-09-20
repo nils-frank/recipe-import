@@ -26,8 +26,16 @@ Drei Eingangsarten, ein Kurzbefehl (§9):
 | PDF | direkt, `POST /import/file` | `sources/document.py` |
 
 **Nicht-Ziele in Phase 1:** kein Whisper, keine Audio- oder Videoanalyse, kein
-Instagram (gestrichen am 2026-08-23, siehe Plan §2.10), kein Freitext-Eingang, keine Queue, kein Reverse Proxy, kein HTTPS, keine Weboberfläche, kein
+Instagram (gestrichen am 2026-08-23, siehe Plan §2.10), kein Freitext-Eingang, kein Reverse Proxy, kein HTTPS, keine Weboberfläche, kein
 Mehrbenutzerbetrieb.
+
+"Keine Queue" ist am 2026-09-20 aus dieser Liste gestrichen worden (Änderung A20,
+`openspec/changes/add-transient-retry-queue`). Es bleibt bei einem Prozess ohne Broker
+und ohne zweiten Container: neu ist allein, dass ein Fehlschlag, bei dem die Gegenstelle
+selbst "später nochmal" sagt, mit einer Fälligkeit in derselben SQLite-Tabelle geparkt
+und von einer Hintergrundschleife erneut versucht wird, statt den Menschen zu bitten,
+dieselbe Quelle noch einmal zu teilen. Siehe §5, §6 `src/store.py` / `src/app.py` und
+§7.
 
 ---
 
@@ -85,7 +93,12 @@ Alles über Umgebungsvariablen, gelesen in `config.py`, sonst nirgends. Stil wie
 | `HA_TOKEN` | ja | – | Long-Lived Access Token |
 | `HA_NOTIFY_TARGET` | ja | – | Name des `notify.*`-Kanals in HA, ohne den `notify.`-Praefix |
 | `LLM_BASE_URL` | nein | `https://generativelanguage.googleapis.com/v1beta/openai` | wechselt später auf den LiteLLM-Proxy |
-| `LLM_MODEL` | nein | `gemini-3.6-flash` | fest verdrahtet, kein wandernder Alias |
+| `LLM_MODEL` | nein | `gemini-3.6-flash` | das bevorzugte Textmodell; ausdrücklich gesetzt wird es zum Kopf der Kette |
+| `LLM_MODEL_CHAIN` | nein | `gemini-3.8-flash, gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash` | die Kette selbst, neuestes zuerst; gesetzt schlägt sie `LLM_MODEL` |
+| `LLM_MODEL_COOLDOWN_SECONDS` | nein | `3600` | so lange wird ein als erschöpft erkanntes Modell übersprungen |
+| `LLM_MODEL_AUTODISCOVER` | nein | `true` | übernimmt neuere Modelle des Anbieters von selbst, siehe unten |
+| `LLM_MODEL_PATTERN` | nein | `^gemini-(\d+)\.(\d+)-flash$` | welche Namen der Modellliste überhaupt in Frage kommen |
+| `LLM_MODEL_REFRESH_SECONDS` | nein | `86400` | Abstand zwischen zwei Durchläufen der Modellsuche |
 | `LLM_API_KEY` | ja | – | |
 | `DB_PATH` | nein | `/data/recipe-import.db` | |
 | `RATE_LIMIT_PER_HOUR` | nein | `20` | harte Obergrenze, siehe §11 |
@@ -94,9 +107,57 @@ Alles über Umgebungsvariablen, gelesen in `config.py`, sonst nirgends. Stil wie
 | `MAX_UPLOAD_FILES` | nein | `4` | mehr Bilder als das sind ein Fehler, kein Abschneiden |
 | `MAX_PDF_PAGES` | nein | `10` | mehr Seiten werden nicht gelesen, siehe §6 |
 | `NAMING_ENABLED` | nein | `true` | Namensstufe, siehe §5 und §6 `naming.make_name` |
+| `IMAGE_ENABLED` | nein | `true` | Bildstufe, siehe §5 und §6 `image.generate` |
+| `IMAGE_PROVIDER` | nein | `pollinations` | oder `openai`; unbekannter Wert fällt auf die Vorgabe zurück |
+| `IMAGE_MODEL` | nein | `sana` (bzw. `imagen-4.0-generate-001` bei `openai`) | fest verdrahtet, ein Modellwechsel ist hier eine bewusste Änderung |
+| `IMAGE_BASE_URL` | nein | `https://image.pollinations.ai` (bzw. `LLM_BASE_URL`) | Vorgabe je Anbieter |
+| `IMAGE_API_KEY` | nein | leer (bzw. `LLM_API_KEY`) | bei `pollinations` bewusst leer: kein fremder Schlüssel an eine andere Firma |
+| `QUEUE_POLL_SECONDS` | nein | `30` | Takt der Warteschlangenschleife, siehe §5 |
+| `QUEUE_BACKOFF_BASE_MINUTES` | nein | `2` | Rückzug in Minuten, `base * factor ** (Versuche - 1)` |
+| `QUEUE_BACKOFF_FACTOR` | nein | `3` | ergibt mit der Vorgabe 2, 6, 18, 54 Minuten |
+| `QUEUE_OFFPEAK_THRESHOLD_MINUTES` | nein | `60` | ab hier statt weiterem Rückzug ein Platz im Nebenzeitfenster |
+| `QUEUE_OFFPEAK_WINDOW` | nein | `02:00-06:00` | lokale Zeit, `HH:MM-HH:MM`, über Mitternacht erlaubt; ein vertippter Wert bricht den Start ab |
+| `QUEUE_MAX_ATTEMPTS` | nein | `5` | Aufgabegrenze, siehe §5 |
+| `QUEUE_MAX_AGE_HOURS` | nein | `24` | zweite Aufgabegrenze, die zuerst erreichte gewinnt |
+| `QUEUE_PAYLOAD_DIR` | nein | `<Verzeichnis von DB_PATH>/queue` | aufbewahrte Uploads geparkter Datei-Importe, siehe §10 |
+| `QUEUE_PAYLOAD_MAX_MB` | nein | `100` | Obergrenze über alle aufbewahrten Uploads zusammen |
 | `LOG_LEVEL` | nein | `INFO` | |
 
 Kein Secret landet je im Repository. `.env.example` enthält nur Platzhalter.
+
+### Das Textmodell ist eine Kette, kein einzelner Name (A21)
+
+Bis A21 stand hier die Regel "`LLM_MODEL` bewusst fest verdrahtet statt als wandernder
+Alias, damit ein Modellwechsel eine bewusste Änderung ist". Sie gilt für das Textmodell
+nicht mehr, und zwar aus einem gemessenen Grund: am 2026-09-20 antwortete
+`gemini-3.6-flash` - der fest verdrahtete Name - auf jede Anfrage
+`429 "You exceeded your current quota"`, während `gemini-3.8-flash` und
+`gemini-3.5-flash` im selben Moment `200` antworteten. Ein fester Name heisst dann nicht
+"bewusst gewählt", sondern "jeder Import scheitert, bis jemand die Variable ändert".
+
+Statt eines Namens hält `LLM_MODEL_CHAIN` deshalb eine Reihenfolge. Antwortet ein Modell
+zweimal `429`, gilt sein Kontingent als leer: es wird für `LLM_MODEL_COOLDOWN_SECONDS`
+übersprungen und derselbe Aufruf geht unverändert an das nächste Modell. Zweimal
+`502/503/504` wechselt ebenfalls, aber ohne Sperrfrist - auch das ist gemessen, denn
+`gemini-3.7-flash` antwortete zweimal `503 "high demand"`, während zwei andere Modelle
+antworteten; Last gehört einem Modell und vergeht in Minuten. `500` wechselt nicht, und
+ein `404` nimmt den Namen für die Laufzeit des Prozesses aus der Kette. Erst wenn die
+ganze Kette durch ist, kommt dieselbe `LlmOverloadedError` heraus wie vorher - der
+Wortlaut aus §7 und das Parken nach §5 bleiben unverändert (`src/model_chain.py`,
+`llm._post`).
+
+Die zweite Hälfte der alten Regel wird ebenso umgekehrt: mit
+`LLM_MODEL_AUTODISCOVER=true` liest der Dienst beim Start und danach täglich
+`GET {LLM_BASE_URL}/models`, behält die Namen, die zu `LLM_MODEL_PATTERN` passen, und
+stellt ein neueres Modell der Kette voran. Damit das keine stille Verschlechterung sein
+kann, ist die Übernahme an drei Bedingungen gebunden: eine schemaerzwungene Probe
+(`response_format: json_schema`, `strict`), die das Modell bestehen muss, ein
+Protokolleintrag, und genau eine Push-Meldung, die alten und neuen Namen nennt. Wer die
+alte Regel zurückhaben will, setzt `LLM_MODEL_AUTODISCOVER=false` und
+`LLM_MODEL_CHAIN` auf einen einzigen Namen - das ist genau das Verhalten von vor A21.
+
+Für `IMAGE_MODEL` gilt die alte Regel unverändert weiter: dessen Anbieter führt genau
+ein Modell, und es gibt nichts, wohin gewechselt werden könnte.
 
 ---
 
@@ -148,10 +209,16 @@ genau diese eine Definition, keine zweite im Prompt.
 6b. naming.make_name()                      naming.py      -> neuer Name oder None
 7.  mealie_client.create_from_jsonld()      -> slug
     bzw. bei 5a: mealie_client.rename(slug, name) -> neuer slug
-8.  mealie_client.set_tags(slug, ["auto-import"])
-9.  store.finish(hash, slug, name)
-10. ha_notify.notify(...)
+8.  store.finish(hash, slug, name)
+9.  image.generate() + mealie_client.set_image()   -> nur wenn das Rezept kein Bild hat
+10. mealie_client.set_tags(slug, ["auto-import"] (+ "ki-bild", falls Schritt 9 lief))
+11. ha_notify.notify(...)
 ```
+
+Schritt 8 steht bewusst vor 9 und 10: ab dem Slug existiert das Rezept in Mealie, und
+weder ein Fehlschlag der Bildstufe noch einer von `set_tags` darf danach noch eine
+Doppelanlage auslösen (Review-A8-Befund 1). Schritt 9 läuft vor der Meldung, damit das
+angetippte Rezept vollständig ist und beide Tags in ein einziges PATCH passen.
 
 `POST /import/file` nimmt Dateien an, antwortet ebenso sofort `202`:
 
@@ -167,6 +234,35 @@ genau diese eine Definition, keine zweite im Prompt.
 
 Bei jedem Fehlschlag: `store.fail(hash, fehlertext)` und eine Rückmeldung, die einen
 Menschen in die Lage versetzt zu verstehen, woran es lag. Nie ein stiller Abbruch.
+
+**Ausnahme: vorübergehende Fehlschläge** (A20, 2026-09-20). Sagt die Gegenstelle selbst
+"später nochmal", wird der Import nicht verworfen, sondern geparkt:
+
+```
+F1. app.is_transient(fehler)                app.py     -> LlmOverloadedError,
+                                                          ThrottledError,
+                                                          MealieUnavailableError
+F2. schedule.should_give_up(...)            schedule.py -> Grenze erreicht? endgültig
+                                                           scheitern, eine letzte Meldung
+F3. payload.save(hash, dateien)             payload.py  -> nur beim Datei-Weg, innerhalb
+                                                           von QUEUE_PAYLOAD_MAX_MB
+F4. schedule.next_due(versuche, jetzt)      schedule.py -> Rückzug, sonst Nebenzeit
+F5. store.queue(hash, faellig, versuche)    store.py    -> status "queued"
+F6. ha_notify.notify("Import später", ...)              -> nur beim ersten Parken
+```
+
+Eine Hintergrundschleife in `app.py` (`_poll_queue`, Takt `QUEUE_POLL_SECONDS`) holt
+alle fälligen Zeilen (`store.due`), übernimmt jede atomar (`store.claim_due`) und lässt
+sie denselben Weg laufen wie einen ersten Anlauf - ohne `store.start()`, damit
+`created_at` und damit die Ratenbegrenzung (§11) unberührt bleiben. Gelingt der Versuch,
+geht die normale Erfolgsmeldung heraus; scheitert er wieder vorübergehend, wird erneut
+geparkt, ohne zweite Meldung. Ist eine der beiden Grenzen erreicht
+(`QUEUE_MAX_ATTEMPTS`, `QUEUE_MAX_AGE_HOURS`), scheitert der Import endgültig mit genau
+einer letzten Meldung.
+
+Alles andere - kein Rezept gefunden, keine Untertitel, gescanntes PDF, fremder Dateityp,
+Schemafehler des Modells, jede Antwort von Mealie mit HTTP-Status - scheitert unverändert
+sofort mit dem Wortlaut aus §7.
 
 ---
 
@@ -330,6 +426,68 @@ begrenzt auf 30 Zutaten, 10 Schritte, 200 Zeichen je Schritt.
 `NAMING_ENABLED=false` schaltet die Stufe vollständig ab; der `import_url`-Weg kommt dann
 wie zuvor ganz ohne LLM aus.
 
+### `src/image.py` und `IMAGE_GENERATION_PROMPT_TEMPLATE` in `src/prompts.py` (A19)
+
+```python
+def generate(name: str, ingredients: list[str]) -> bytes | None
+```
+
+Aufbau wie die Namensstufe, eine Schicht weiter aussen: ein Schalter, ein Aufruf, jeder
+Fehlschlag endet in `None` und einer Warnung. Sie läuft erst, wenn das Rezept in Mealie
+existiert und `store.finish()` gelaufen ist - ein Fehlschlag kann deshalb keinen zweiten
+Import auslösen, sondern kostet nur das Bild.
+
+Der Anbieter steht in `IMAGE_PROVIDER`, weil die beiden Formen sich nicht ineinander
+übersetzen lassen:
+
+* `pollinations` (Vorgabe): `GET {IMAGE_BASE_URL}/prompt/{Prompt}`, der Prompt urlkodiert
+  im Pfad, der Antwortkörper **ist** das Bild. Ohne Konto und ohne Schlüssel.
+* `openai`: `POST {IMAGE_BASE_URL}/images/generations`, gelesen werden `data[0].b64_json`
+  und ersatzweise `data[0].url`. `llm._post` passt dafür nicht: der ist fest auf
+  `/chat/completions` samt erzwungenem JSON-Schema.
+
+Warum nicht der Anbieter des Textmodells: dessen Schlüssel kann keine Bilder erzeugen.
+Gemessen am 2026-09-20 antworten dort alle Bildmodelle 429 "free_tier ... limit: 0", auch
+mit einem Schlüssel aus einem frisch angelegten Projekt - das Kontingent ist auf
+Kontoebene null. Pollinations lieferte in derselben Probe 200 `image/jpeg`, 768x768,
+46-73 KB, 35-46 s je Bild. Ohne Token sind dort `nologo`, `width` und `height` wirkungslos:
+jedes Bild trägt unten rechts ein `pollinations.ai`-Wasserzeichen. Das ist hingenommen -
+ein erzeugtes Bild ist ohnehin als `ki-bild` gekennzeichnet, und Zuschneiden bräuchte eine
+Bildbibliothek, die dieser Dienst nicht trägt. Ein kostenloses Token in `IMAGE_API_KEY`
+(zweite Probe am 2026-09-20) wird erkannt und hebt die feste Kantenlänge auf, das
+Wasserzeichen jedoch nicht - dafür braucht es eine bezahlte Stufe des Dienstes.
+
+Zeitlimit 90 Sekunden, **kein** zweiter Versuch, Anfragegrösse begrenzt auf 10 Zutaten.
+Die Bytes müssen JPEG, PNG oder WebP sein (`llm._image_mime`) und höchstens 12 MB gross.
+
+Ob überhaupt erzeugt wird, entscheidet `app._attach_image`: auf dem JSON-LD-Weg immer
+(`to_jsonld` kennt kein Bildfeld), auf dem `import_url`-Weg nur, wenn
+`mealie_client.has_image()` kein Bild findet. Ein von der Quellseite geholtes Foto wird
+nie ersetzt. Fehlt die Mealie-Antwort, weil Mealie bei der Platzhalter-Prüfung nicht
+erreichbar war, unterbleibt die Stufe, ebenso bei `IMAGE_ENABLED=false` - dann noch vor
+der Bildstandsabfrage.
+
+`has_image()` fragt dafür Mealies Mediendatei ab (`GET
+/api/media/recipes/{id}/images/original.webp`, 200 heisst Bild, 404 heisst keines) statt
+das Feld `image` der bereits vorliegenden Antwort zu lesen. Gemessen am 2026-09-20:
+Mealie füllt dieses Feld mit einer Kennung auch dann, wenn gar kein Bild hinterlegt ist -
+bei 28 von 29 bildlosen Rezepten dieser Anlage. Das kostet auf dem `import_url`-Weg eine
+zusätzliche Anfrage, ist aber die einzige Auskunft, die stimmt. Bei Netzfehler,
+unerwartetem Status oder fehlender id gilt "hat ein Bild": lieber kein erzeugtes Bild als
+ein überschriebenes Foto.
+
+Der Prompt ist als einziger in `prompts.py` englisch: seine Ausgabe ist ein Bild ohne
+Text, und Bildmodelle sind auf englische Bildunterschriften trainiert. Er ist ein Satz
+aus Gerichtname, Hauptzutaten, Anrichten und Licht, mit "no text, no logo" am Ende. Die
+erste Fassung zählte über 761 Zeichen lang alle Verbote auf und bekam in der Probe vom
+2026-09-20 genau das zurück, was sie ausschloss: einen leeren Teller mit gekritzelter
+Pseudo-Schrift. Die Zubereitungsschritte stehen deshalb nicht mehr im Prompt.
+
+Ein erzeugtes Bild ist kein Foto des gekochten Gerichts, deshalb trägt das Rezept danach
+zusätzlich das Tag `ki-bild` (§5, Schritt 10) - in Mealie filterbar, statt nur im
+Protokoll zu stehen. `IMAGE_ENABLED=false` schaltet die Stufe vollständig ab; bereits
+hochgeladene Bilder bleiben.
+
 ### `src/mealie_client.py` (A3)
 
 ```python
@@ -343,7 +501,15 @@ def is_placeholder(recipe: dict) -> bool          # A16
 def delete_recipe(slug: str) -> None              # A16
 def rename(slug: str, name: str) -> None          # PATCH /api/recipes/{slug}, nur "name"
 def recipe_texts(recipe: dict) -> tuple[list[str], list[str]]   # Zutaten, Schritte als Freitext
+def has_image(recipe: dict) -> bool               # A19, GET /api/media/recipes/{id}/images/...
+def set_image(slug: str, data: bytes) -> None     # A19, PUT /api/recipes/{slug}/image, multipart
 ```
+
+`set_image` und `has_image` sind am 2026-09-20 an der laufenden Anlage gemessen worden
+(Mealie v3.22.0), Einzelheiten im Moduldocstring: der Pfad samt beider Pflichtfelder aus
+`/openapi.json`, und für `has_image` der Befund, dass nur die Mediendatei eine belastbare
+Auskunft gibt. `set_image` schickt als einziger Aufruf multipart statt JSON und kommt
+deshalb ohne `_HEADERS` aus.
 
 `rename` gibt den danach gültigen Slug zurück, weil Mealie ihn aus dem neuen Namen **neu
 ableitet** - live verifiziert am 2026-08-24 gegen Mealie v3.22.0: nach der Umbenennung
@@ -377,12 +543,15 @@ SQLite unter `DB_PATH`, eine Tabelle:
 CREATE TABLE IF NOT EXISTS imports (
   url_hash   TEXT PRIMARY KEY,
   url        TEXT NOT NULL,
-  status     TEXT NOT NULL,      -- pending | done | failed
+  status     TEXT NOT NULL,      -- pending | queued | done | failed
   slug       TEXT,
   title      TEXT,
   error      TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,   -- A20
+  due_at     TEXT,                         -- A20, UTC ISO-8601
+  payload    TEXT                          -- A20, JSON zu aufbewahrten Uploads
 );
 ```
 
@@ -394,7 +563,21 @@ def finish(url_hash: str, slug: str, title: str) -> None
 def fail(url_hash: str, error: str) -> None
 def pending() -> list[dict]
 def recent_count(seconds: int) -> int
+# A20, Warteschlange:
+def queue(url_hash: str, due_at: str, attempts: int, payload: str | None = None) -> None
+def due(now: str) -> list[dict]              # fällige queued-Zeilen, älteste zuerst
+def claim_due(url_hash: str) -> bool         # atomar queued -> pending
+def queued() -> list[dict]
 ```
+
+Die drei Spalten kommen additiv dazu (`ALTER TABLE`, abgesichert über
+`PRAGMA table_info`, ausgeführt in `init()`): eine bestehende Datenbank wandert ohne
+Handgriff, und eine ältere Fassung des Dienstes ignoriert sie wieder. `queued` heisst
+"wartet auf einen späteren Versuch", `pending` unverändert "wird gerade bearbeitet".
+`finish` und `fail` räumen `due_at` und `attempts` mit ab - ein Endzustand trägt keine
+Fälligkeit mehr. `claim_due` benutzt dasselbe atomare Muster wie `start` und aus
+demselben Grund. Bewusst keine zweite Tabelle: sonst müsste jede bestehende Zusicherung
+zwei Tabellen befragen, um den Stand einer Quelle zu kennen (A20, `design.md`).
 
 `start` ist der Anspruch auf einen Hash und muss atomar sein: ein `INSERT ... ON CONFLICT`,
 das nur auf einem `failed`-Eintrag erneut greift, nicht Lesen und danach Schreiben.
@@ -459,10 +642,51 @@ Protokoll). Die Rückmeldung läuft weiterhin über Home Assistant, §6 `ha_noti
 Der Vergleich in Zahlen: `MAX_UPLOAD_MB` begrenzt die Summe aller Dateien einer Anfrage,
 `MAX_UPLOAD_FILES` ihre Anzahl. Überschreitungen werden abgewiesen, nicht beschnitten.
 
-Beim Start: `store.init()`, danach jeden `pending`-Eintrag erneut in die Verarbeitung
-geben. Damit übersteht ein Auftrag einen Neustart des Containers.
+Beim Start: `store.init()`, danach die verwaisten Upload-Verzeichnisse abräumen
+(`payload.sweep`), danach jeden `pending`-Eintrag erneut in die Verarbeitung geben.
+Damit übersteht ein Auftrag einen Neustart des Containers. Seit A20 gilt das auch für
+einen Datei-Import, sofern seine Bytes aufbewahrt sind; ohne sie bleibt es bei
+"bitte die Datei noch einmal teilen". Zuletzt startet die Warteschlangenschleife
+(`_poll_queue`), die beim Herunterfahren abgebrochen und abgewartet wird.
 
-Die Verarbeitung selbst läuft über `BackgroundTasks`, keine Queue.
+Die Verarbeitung selbst läuft über `BackgroundTasks`; die Warteschlange (§5) ist eine
+einzige `asyncio`-Aufgabe im selben Prozess, kein Broker und kein zweiter Container.
+
+```python
+def is_transient(exc: Exception) -> bool     # A20, Weiche "später nochmal"
+async def _run_due_once(now: datetime | None = None) -> int   # ein Durchgang, testbar
+```
+
+Dazu zwei neue Module:
+
+### `src/schedule.py` (A20)
+
+```python
+def next_due(attempts: int, now: datetime, jitter: Callable[[], float] = random.random) -> datetime
+def should_give_up(attempts: int, created_at: str | datetime, now: datetime) -> bool
+```
+
+Reine Rechnung, kein Ein- und Ausgabeverkehr: `now` und die Streuquelle sind Argumente,
+damit kein Test schläft (§12). Rückzug mit ±25% Streuung; überschreitet die Verzögerung
+`QUEUE_OFFPEAK_THRESHOLD_MINUTES`, wird stattdessen ein zufälliger Punkt im nächsten
+Nebenzeitfenster gewählt - läuft das Fenster gerade und passt der Versuch noch hinein,
+das laufende. Das Fenster ist lokale Zeit, die gespeicherte Fälligkeit absolute UTC-Zeit.
+
+### `src/payload.py` (A20)
+
+```python
+def save(url_hash: str, uploads: list[Upload]) -> str      # JSON für die Spalte payload
+def load(url_hash: str, payload: str | None) -> list[Upload] | None
+def delete(url_hash: str) -> None                          # idempotent
+def total_bytes() -> int
+def fits_in_budget(uploads: list[Upload]) -> bool
+def sweep(keep: set[str]) -> list[str]
+```
+
+Ein Verzeichnis je `url_hash` unter `QUEUE_PAYLOAD_DIR`, darin eine durchnummerierte
+Datei je Upload. Der ursprüngliche Dateiname steht in der JSON-Beschreibung, nie im
+Pfad: er ist fremde Eingabe. Gelöscht wird an jedem Endzustand, und was ein Absturz
+dazwischen übrig lässt, räumt `sweep()` beim Start ab.
 
 ---
 
@@ -475,14 +699,32 @@ Deutsch, knapp, immer mit Grund. Beispiele, wörtlich zu verwenden:
 | Erfolg | `Rezept angelegt` | `<Name>` plus Link |
 | Schon vorhanden | `Rezept schon vorhanden` | `<Name> wurde bereits importiert` plus Link |
 | Kein Untertitel | `Import fehlgeschlagen` | `Das Video hat keine Untertitel, daraus lässt sich kein Rezept lesen.` |
-| YouTube drosselt (HTTP 429) | `Import fehlgeschlagen` | `YouTube drosselt gerade die Untertitel. Bitte später erneut teilen.` |
 | Kein Rezept erkennbar | `Import fehlgeschlagen` | `Auf der Seite war kein Rezept zu finden.` |
-| LLM überlastet (HTTP 429/500/502/503/504, auch nach einem Wiederholungsversuch) | `Import fehlgeschlagen` | `Das Sprachmodell ist gerade überlastet. Bitte später erneut teilen.` |
-| LLM-Fehler (sonst) | `Import fehlgeschlagen` | `Die Rezepterkennung ist gescheitert: <Grund>` |
-| Mealie nicht erreichbar | `Import fehlgeschlagen` | `Mealie hat den Import abgelehnt: <Grund>` |
+| LLM-Fehler (Schema auch im zweiten Anlauf verfehlt) | `Import fehlgeschlagen` | `Die Rezepterkennung ist gescheitert: <Grund>` |
+| Kein eingestelltes Modell existiert beim Anbieter (A21, HTTP 404 auf jedem Namen der Kette) | `Import fehlgeschlagen` | `Die Rezepterkennung ist gescheitert: <Grund>` - der Grund nennt jeden abgewiesenen Namen |
+| Mealie lehnt ab (Antwort mit HTTP-Status) | `Import fehlgeschlagen` | `Mealie hat den Import abgelehnt: <Grund>` |
 | Gescanntes PDF | `Import fehlgeschlagen` | `Dieses PDF enthält keinen lesbaren Text. Ein Foto der Seite funktioniert besser.` |
 | Datei zu gross oder falscher Typ | `Import fehlgeschlagen` | `Diese Datei kann ich nicht lesen: <Grund>` |
 | Kein Rezept auf dem Bild | `Import fehlgeschlagen` | `Auf dem Bild war kein Rezept zu erkennen.` |
+
+Geparkt statt gescheitert (A20, 2026-09-20). Diese drei Fälle endeten bis dahin mit
+"Bitte später erneut teilen"; heute wird der Import automatisch wiederholt, und genau
+eine Meldung sagt das zu - nicht eine je Versuch. Seit A21 wird die erste Zeile
+seltener erreicht: sie gilt erst, wenn **jedes** Modell der Kette abgelehnt hat, nicht
+schon beim ersten (§3, `src/model_chain.py`). Der Wortlaut ist derselbe geblieben, denn
+für den Menschen ist es derselbe Fall.
+
+`app._describe_source_error` trägt für `LlmOverloadedError` weiterhin wörtlich
+`Das Sprachmodell ist gerade überlastet. Bitte später erneut teilen.` - das ist der
+Rückfall für den Fall, dass das Parken selbst nicht möglich war.
+
+| Fall | Titel | Nachricht |
+|---|---|---|
+| **Jedes** Modell der Kette ist erschöpft oder ausgelastet (A21: HTTP 429/502/503/504 auf jedem Namen, oder HTTP 500 auf dem gerade genutzten - jeweils auch nach dem Wiederholungsversuch) | `Import später` | `Das Sprachmodell ist gerade ausgelastet. Ich versuche es automatisch später noch einmal.` |
+| YouTube drosselt (HTTP 429) | `Import später` | `YouTube drosselt gerade die Untertitel. Ich versuche es automatisch später noch einmal.` |
+| Mealie nicht erreichbar (Verbindungsfehler, kein HTTP-Status) | `Import später` | `Mealie ist gerade nicht erreichbar. Ich versuche es automatisch später noch einmal.` |
+| Wiederholungen aufgebraucht oder Altersgrenze erreicht | `Import fehlgeschlagen` | `Auch nach mehreren Versuchen hat es nicht geklappt. Bitte noch einmal teilen.` |
+| Kein Platz mehr für aufbewahrte Uploads (`QUEUE_PAYLOAD_MAX_MB`) | `Import fehlgeschlagen` | `Für einen späteren Versuch ist kein Speicher mehr frei. Bitte die Datei später noch einmal teilen.` |
 
 ---
 
@@ -581,6 +823,11 @@ Vierter Stack in der Struktur aus `umzug` T1, keine abweichende Konvention:
 - Speicherobergrenze `mem_limit: 512m`. Der Host hat rund 2 GB frei, und Paperless soll
   nicht durch diesen Dienst verdrängt werden.
 - Die systemd-Unit folgt exakt dem Muster der drei vorhandenen unter `compose/systemd/`.
+- Aufbewahrte Uploads geparkter Datei-Importe liegen unter `QUEUE_PAYLOAD_DIR`, per
+  Vorgabe `/data/queue` und damit im bereits eingehängten Bind-Mount - kein neues
+  Volume. Der Platzbedarf ist durch `QUEUE_PAYLOAD_MAX_MB` (Vorgabe 100 MB) begrenzt,
+  und jeder Eintrag verschwindet mit dem Endzustand seines Imports, spätestens mit
+  `QUEUE_MAX_AGE_HOURS` (A20).
 
 ---
 
@@ -589,7 +836,12 @@ Vierter Stack in der Struktur aus `umzug` T1, keine abweichende Konvention:
 `app.py` weist `POST /import` **und** `POST /import/file` mit `429` ab, wenn
 `store.recent_count(3600)` den Wert aus `RATE_LIMIT_PER_HOUR` erreicht. Ein gemeinsamer
 Zähler, weil beide Wege dieselben LLM-Kosten auslösen - Bilder sogar teurer. Grund: die Webhook-ID ist die einzige Authentifizierung
-des gesamten Wegs. Wer sie kennt, könnte sonst beliebig kostenpflichtige LLM-Aufrufe
+des gesamten Wegs.
+
+Gezählt werden angenommene Importe, keine Versuche: `recent_count` liest `created_at`,
+und kein Weg der Warteschlange (§5) fasst dieses Feld an. Ein fälliger Versuch läuft
+deshalb auch dann, wenn die Stundengrenze gerade ausgeschöpft ist, und erhöht den Zähler
+nicht (A20). Wer sie kennt, könnte sonst beliebig kostenpflichtige LLM-Aufrufe
 auslösen.
 
 ---
@@ -629,6 +881,12 @@ Mindestens abzudecken:
     `NAMING_ENABLED=false` erzeugt keinen LLM-Aufruf. Weil die Stufe im Dienst
     standardmässig an ist, schaltet `conftest.py` sie für alle übrigen Tests ab - sonst
     liefe die Testreihe gegen das Netz.
+13. Die Bildstufe (A19): ein Rezept ohne Bild bekommt eines und danach beide Tags, ein
+    von Mealie geschabtes Bild bleibt unangetastet und erzeugt keinen Aufruf, und jeder
+    Fehlschlag der Stufe (Anbieter, unbrauchbare Antwort, abgelehnter Upload) lässt den
+    Import `done` mit unveränderter Rückmeldung und nur dem Tag `auto-import`. Ein
+    zweites Teilen derselben Quelle kostet kein Bild. Wie die Namensstufe ist sie in
+    `conftest.py` für alle übrigen Tests abgeschaltet.
 
 ---
 
