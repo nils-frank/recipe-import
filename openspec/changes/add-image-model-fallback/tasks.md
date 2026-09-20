@@ -48,18 +48,18 @@ appears in a file of this repository.
 
 ## 3. Chain state module
 
-- [ ] 3.1 Create `src/image_chain.py` with `candidates()`, `mark_exhausted()`,
+- [x] 3.1 Create `src/image_chain.py` with `candidates()`, `mark_exhausted()`,
   `mark_unknown()`, `reset()`, the `_now = time.monotonic` seam and a `threading.Lock`,
   keyed by the `provider:model` pair; verify `candidates()` returns the configured order
   on a fresh module.
-- [ ] 3.2 Implement cooldown filtering; verify in `tests/test_image_chain.py` that an
+- [x] 3.2 Implement cooldown filtering; verify in `tests/test_image_chain.py` that an
   exhausted candidate is absent before its deadline and present after, using a patched
   `_now` and no sleeping.
-- [ ] 3.3 Implement `mark_unknown` as process-lifetime removal; verify the candidate never
+- [x] 3.3 Implement `mark_unknown` as process-lifetime removal; verify the candidate never
   reappears regardless of the clock.
-- [ ] 3.4 Handle the empty-chain case as a normal state rather than an exception; verify a
+- [x] 3.4 Handle the empty-chain case as a normal state rather than an exception; verify a
   test asserts an empty list.
-- [ ] 3.5 Reset the chain state per test the way `frische_modellkette` does for the text
+- [x] 3.5 Reset the chain state per test the way `frische_modellkette` does for the text
   chain; verify by adding the fixture to `tests/conftest.py` and asserting two tests in a
   row each start from the configured order.
 
