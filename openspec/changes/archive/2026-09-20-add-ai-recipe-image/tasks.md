@@ -24,12 +24,26 @@
 > erkannt und macht `width`/`height` wirksam, hebt das Wasserzeichen aber **nicht** auf.
 > Alle Texte, die "beides" behaupteten, sind nachgezogen.
 >
-> 8.2 ist damit erledigt. 8.1 ist **angehalten**: der Textmodell-Weg antwortet gerade
-> abwechselnd 503 ("This model is currently experiencing high demand") und 429
-> ("generate_content_free_tier_requests, limit: 20" je Minute), sieben Anläufe über
-> 15 Minuten scheiterten schon vor der Bildstufe. Das liegt an Gemini, nicht an dieser
-> Änderung - eine direkte Probe mit demselben Schlüssel und demselben Schema kam
+> 8.2 ist damit erledigt. 8.1 war am selben Tag zunächst **angehalten**: der
+> Textmodell-Weg antwortete abwechselnd 503 ("This model is currently experiencing high
+> demand") und 429 ("generate_content_free_tier_requests, limit: 20" je Minute), sieben
+> Anläufe über 15 Minuten scheiterten schon vor der Bildstufe. Das liegt an Gemini, nicht
+> an dieser Änderung - eine direkte Probe mit demselben Schlüssel und demselben Schema kam
 > zwischendurch mit 200 zurück.
+>
+> 8.1 ist am 2026-09-20 spätabends nachgeholt und **erledigt**. Zwei Befunde dazu:
+>
+> 1. Das fest verdrahtete `gemini-3.6-flash` beantwortete jede Anfrage mit 429 ("You
+>    exceeded your current quota"), `gemini-3.8-flash` in derselben Minute mit 200 -
+>    derselbe Befund, der `add-llm-model-fallback` ausgelöst hat. Weil dieser Zweig noch
+>    nicht ausgerollt ist, trägt die `.env` auf dem Zielhost seither
+>    `LLM_MODEL=gemini-3.8-flash` (Sicherung `.env.bak-20260920-task81`); sobald
+>    `LLM_MODEL_CHAIN` dort läuft, kann das Pin wieder weg.
+> 2. Das erzeugte Bild zeigt nicht zuverlässig das Gericht: für "Schnelle Nougatplunder"
+>    (Plunderteig, Nougatcreme, Haselnüsse) lieferte `sana` eine Tarte mit Spiegelei. Der
+>    Prompt nennt Namen und Zutaten wie vorgesehen, die Stufe hat also getan, was das SPEC
+>    verlangt - die Trefferquote des freien Modells ist eine eigene Frage, kein Befund
+>    dieser Änderung.
 
 ## 1. Live verification before any code depends on it
 
@@ -124,11 +138,22 @@
 
 ## 8. Real-world check
 
-- [ ] 8.1 (angehalten 2026-09-20, siehe Kopf) Run one real import of a source with no picture (a photographed recipe page is
+- [x] 8.1 Run one real import of a source with no picture (a photographed recipe page is
   the cheapest) against the live Mealie, and confirm in the Mealie UI: the recipe shows a
   generated picture, carries both `auto-import` and `ki-bild`, the push notification is
   unchanged in wording, and the tile in the recipe grid no longer looks broken or
   half-loaded at the sizes Mealie renders.
+  **Done 2026-09-20** with a photographed recipe page (full-page capture of
+  `gutekueche.at/schnelle-nougatplunder-rezept-6013`, 325 KB JPEG) via `POST
+  /import/file`. Log: `LLM-Bilderkennung ... Modell gemini-3.8-flash`, one 503 retry,
+  `create_from_jsonld -> slug=schnelle-nougatplunder`, `Bilderzeugung ... bei
+  pollinations, Modell sana`, `Bild ... erzeugt: 66197 Bytes, image/jpeg`, `PUT
+  .../image`, `PATCH ... tags=['auto-import', 'ki-bild']`. Mealie shows the recipe with
+  5 ingredients, 4 steps, both tags, and the generated picture on the detail page and as
+  a full-bleed grid tile at both rendered sizes - nothing broken or half-loaded. The push
+  went out without a warning from `ha_notify` (it only logs failures) and its wording is
+  the unchanged `"Rezept angelegt"` + title + link. The naming stage hit a 503 and kept
+  the extracted name, which is its documented behaviour and not part of this change.
 - [x] 8.2 Run one real import of a scrapable site that brings its own photo and confirm
   the photo is untouched, no `ki-bild` tag is set, and the log shows no image call.
   **Done 2026-09-20** with `https://www.gutekueche.de/kartoffelsuppe-rezept-2129` (the
