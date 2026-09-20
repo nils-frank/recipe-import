@@ -9,7 +9,8 @@ context: |
   commit messages and the OpenSpec artifacts are written in English.
   Tests run without any network access; the provider is always stubbed.
   Lint with `ruff check .` (pinned in requirements-dev.txt, configured in pyproject.toml).
-  One change per git branch, one commit per change. See the operation guidance below.
+  One change per git branch, committed in steps as the work proceeds. See the operation
+  guidance below.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
@@ -38,20 +39,23 @@ operations:
         edits to the same file cannot be separated afterwards, and a file level split then
         produces a commit that never existed as a working state.
       - >-
-        Commit once, after every task is checked off and the tests and `ruff check .` pass.
-        Use a single commit for the whole change unless the user asks for more. Write the
-        message in English prose: a subject line saying what the code now does, then
-        paragraphs covering the problem, the mechanism and anything deliberately left out.
-        Do not add a co-author trailer.
+        Commit as the work proceeds, not once at the end. A commit covers one task or one
+        group of tasks that belong together, and it is taken at a point where the tests and
+        `ruff check .` pass. A change therefore carries as many commits as it has coherent
+        steps. Leave the tree clean whenever the work pauses.
+      - >-
+        Write every message in English prose: a subject line saying what the code now does,
+        then paragraphs covering the problem, the mechanism and anything deliberately left
+        out. Do not add a co-author trailer. The branch is rebase merged, so each commit
+        reaches main on its own and has to read on its own.
       - >-
         Commit only files belonging to this change. Report the diff scope before committing
         and say plainly if it cannot be kept clean.
   archive:
     guidance:
       - >-
-        The archive move and the synced main specs are part of the change. Commit them,
-        either by amending the change commit when it has not been pushed yet, or as a
-        follow up commit on the same branch when it has.
+        The archive move and the synced main specs are part of the change. Commit them on
+        the same branch, as a commit of their own.
       - >-
         Leave the working tree clean and the branch pushed when the archive finishes, so
         the change can go straight into a pull request. Rebase merge is the only merge
