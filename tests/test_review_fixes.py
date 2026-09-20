@@ -35,7 +35,9 @@ def test_failed_set_tags_does_not_mark_import_failed_or_duplicate(monkeypatch, i
 
     create_mock = MagicMock(return_value="kaesespaetzle")
     monkeypatch.setattr(app_module.mealie_client, "create_from_jsonld", create_mock)
-    monkeypatch.setattr(app_module.mealie_client, "set_tags", MagicMock(side_effect=RuntimeError("Mealie 500")))
+    monkeypatch.setattr(
+        app_module.mealie_client, "set_tags", MagicMock(side_effect=RuntimeError("Mealie 500"))
+    )
     monkeypatch.setattr(app_module.mealie_client, "recipe_link", lambda slug: f"http://mealie.local/g/home/r/{slug}")
     notify_mock = MagicMock()
     monkeypatch.setattr(app_module.ha_notify, "notify", notify_mock)

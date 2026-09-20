@@ -100,7 +100,8 @@ def start(url_hash: str, url: str) -> bool:
 def finish(url_hash: str, slug: str, title: str) -> None:
     with _connect() as conn:
         conn.execute(
-            "UPDATE imports SET status = 'done', slug = ?, title = ?, error = NULL, updated_at = ? WHERE url_hash = ?",
+            "UPDATE imports SET status = 'done', slug = ?, title = ?, error = NULL, "
+            "updated_at = ? WHERE url_hash = ?",
             (slug, title, _now(), url_hash),
         )
         conn.commit()

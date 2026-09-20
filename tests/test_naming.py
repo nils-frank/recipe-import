@@ -189,7 +189,9 @@ def test_scraped_recipe_is_renamed_and_slug_is_followed(monkeypatch, naming_on, 
     store-Eintrag folgen deshalb dem neuen Slug."""
     monkeypatch.setattr(app_module, "classify", lambda url: "site")
     monkeypatch.setattr(
-        app_module.mealie_client, "import_url", MagicMock(return_value="apfel-kaesekuchen-vom-blech-von-baerchenknutscher")
+        app_module.mealie_client,
+        "import_url",
+        MagicMock(return_value="apfel-kaesekuchen-vom-blech-von-baerchenknutscher"),
     )
     monkeypatch.setattr(app_module.mealie_client, "get_recipe", lambda slug: MEALIE_RECIPE)
     monkeypatch.setattr(app_module.mealie_client, "delete_recipe", MagicMock())

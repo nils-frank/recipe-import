@@ -139,7 +139,9 @@ def test_unreachable_placeholder_check_treats_slug_as_success(monkeypatch, isola
     delete_mock = MagicMock()
     monkeypatch.setattr(app_module.mealie_client, "delete_recipe", delete_mock)
     monkeypatch.setattr(app_module.mealie_client, "set_tags", MagicMock())
-    monkeypatch.setattr(app_module.mealie_client, "get_recipe_name", MagicMock(return_value="Irgendein Rezept"))
+    monkeypatch.setattr(
+        app_module.mealie_client, "get_recipe_name", MagicMock(return_value="Irgendein Rezept")
+    )
     monkeypatch.setattr(app_module.mealie_client, "recipe_link", lambda slug: f"http://mealie.local/g/home/r/{slug}")
     notify_mock = MagicMock()
     monkeypatch.setattr(app_module.ha_notify, "notify", notify_mock)

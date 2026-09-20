@@ -102,7 +102,10 @@ def import_url(url: str) -> str | None:
         return None
 
     if resp.status_code != 201:
-        log.info("import_url(%s) -> %d, Mealie kann die Seite nicht scrapen: %s", url, resp.status_code, resp.text[:300])
+        log.info(
+            "import_url(%s) -> %d, Mealie kann die Seite nicht scrapen: %s",
+            url, resp.status_code, resp.text[:300],
+        )
         return None
 
     slug = resp.json()
