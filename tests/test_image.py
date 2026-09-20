@@ -225,10 +225,12 @@ def test_prompt_bounds_a_long_ingredient_list():
 @pytest.fixture
 def openai_provider(monkeypatch):
     """Schaltet auf den OpenAI-kompatiblen Weg, samt Schlüssel - der ist bei der
-    Vorgabe leer."""
+    Vorgabe leer. Adresse und Schlüssel stehen seit A22 je Anbieter in
+    `config.IMAGE_ENDPOINTS`, deshalb wird dort gesetzt."""
     monkeypatch.setattr(config, "IMAGE_PROVIDER", "openai")
-    monkeypatch.setattr(config, "IMAGE_BASE_URL", "https://llm.example/v1")
-    monkeypatch.setattr(config, "IMAGE_API_KEY", "test-platzhalter-image-key")
+    monkeypatch.setitem(
+        config.IMAGE_ENDPOINTS, "openai", ("https://llm.example/v1", "test-platzhalter-image-key")
+    )
 
 
 def test_pollinations_returns_image_bytes(monkeypatch, image_on):
@@ -260,7 +262,11 @@ def test_pollinations_sends_no_authorization_without_a_key(monkeypatch, image_on
 
 
 def test_pollinations_sends_a_token_when_one_is_configured(monkeypatch, image_on):
-    monkeypatch.setattr(config, "IMAGE_API_KEY", "test-platzhalter-pollinations-token")
+    monkeypatch.setitem(
+        config.IMAGE_ENDPOINTS,
+        "pollinations",
+        ("https://image.pollinations.ai", "test-platzhalter-pollinations-token"),
+    )
     get_mock = MagicMock(return_value=_Response(content=JPEG_BYTES))
     monkeypatch.setattr(image.requests, "get", get_mock)
 
@@ -319,6 +325,103 @@ def test_generate_is_skipped_when_disabled(monkeypatch):
     assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) is None
     get_mock.assert_not_called()
     post_mock.assert_not_called()
+
+
+# --- image.generate, Anbieter gemini (A22, Aufgaben 4.1 und 4.2) ------------------
+#
+# Die Form von Anfrage und Antwort ist die am 2026-09-20 gemessene (design.md, Context),
+# nicht die aus der Dokumentation gelesene.
+
+
+@pytest.fixture
+def gemini_provider(monkeypatch):
+    """Schaltet auf die native Gemini-Fläche, mit eigener Adresse und eigenem Schlüssel."""
+    monkeypatch.setattr(config, "IMAGE_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "IMAGE_MODEL", "gemini-3-pro-image")
+    monkeypatch.setitem(
+        config.IMAGE_ENDPOINTS,
+        "gemini",
+        ("https://generativelanguage.example/v1beta-basis", "test-platzhalter-llm-key"),
+    )
+
+
+def _gemini_answer(*parts) -> dict:
+    return {"candidates": [{"content": {"parts": list(parts)}}]}
+
+
+def _bildteil(daten: str = JPEG_B64, mime: str = "image/jpeg") -> dict:
+    return {"inlineData": {"mimeType": mime, "data": daten}}
+
+
+def test_gemini_sends_the_measured_request_shape(monkeypatch, image_on, gemini_provider):
+    post_mock = MagicMock(return_value=_Response(payload=_gemini_answer(_bildteil())))
+    monkeypatch.setattr(image.requests, "post", post_mock)
+
+    data = image.generate("Kartoffelsuppe mit Majoran", ["800 g Kartoffeln"])
+
+    assert data == JPEG_BYTES
+    url = post_mock.call_args.args[0]
+    kwargs = post_mock.call_args.kwargs
+    assert url == (
+        "https://generativelanguage.example/v1beta-basis"
+        "/v1beta/models/gemini-3-pro-image:generateContent"
+    )
+    # Der Schlüssel geht im anbietereigenen Kopf mit, nicht als Bearer-Token.
+    assert kwargs["headers"]["x-goog-api-key"] == "test-platzhalter-llm-key"
+    assert "Authorization" not in kwargs["headers"]
+
+    payload = kwargs["json"]
+    assert payload["contents"] == [
+        {"parts": [{"text": image._prompt("Kartoffelsuppe mit Majoran", ["800 g Kartoffeln"])}]}
+    ]
+    assert payload["generationConfig"]["responseModalities"] == ["IMAGE"]
+    # Quadratisch zum selben Preis: Mealies Kachel würde 1408x768 beschneiden.
+    assert payload["generationConfig"]["imageConfig"]["aspectRatio"] == "1:1"
+    assert kwargs["timeout"] == image.GEMINI_TIMEOUT_SECONDS
+
+
+def test_gemini_reads_the_image_part_after_a_text_part(monkeypatch, image_on, gemini_provider):
+    """Die Antwort darf Text **und** Bild tragen; gesucht ist der erste Bildteil."""
+    payload = _gemini_answer({"text": "Hier ist dein Bild:"}, _bildteil())
+    monkeypatch.setattr(image.requests, "post", MagicMock(return_value=_Response(payload=payload)))
+
+    assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) == JPEG_BYTES
+
+
+def test_gemini_returns_none_when_the_model_answers_with_words(
+    monkeypatch, image_on, gemini_provider
+):
+    """Ein Modell, das antwortet statt zu malen, ist eine unbrauchbare Antwort - kein
+    Fehler des Anbieters."""
+    payload = _gemini_answer({"text": "Ich kann dieses Bild nicht erzeugen."})
+    monkeypatch.setattr(image.requests, "post", MagicMock(return_value=_Response(payload=payload)))
+
+    assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) is None
+
+
+def test_gemini_returns_none_without_candidates(monkeypatch, image_on, gemini_provider):
+    monkeypatch.setattr(
+        image.requests, "post", MagicMock(return_value=_Response(payload={"candidates": []}))
+    )
+
+    assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) is None
+
+
+def test_gemini_returns_none_for_undecodable_base64(monkeypatch, image_on, gemini_provider):
+    payload = _gemini_answer(_bildteil(daten="!!! kein base64 !!!"))
+    monkeypatch.setattr(image.requests, "post", MagicMock(return_value=_Response(payload=payload)))
+
+    assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) is None
+
+
+def test_gemini_returns_none_on_error_status(monkeypatch, image_on, gemini_provider):
+    monkeypatch.setattr(
+        image.requests,
+        "post",
+        MagicMock(return_value=_Response(status_code=429, text="RESOURCE_EXHAUSTED")),
+    )
+
+    assert image.generate("Kartoffelsuppe", ["800 g Kartoffeln"]) is None
 
 
 # --- image.generate, Anbieter openai (Aufgabe 4.2) --------------------------------

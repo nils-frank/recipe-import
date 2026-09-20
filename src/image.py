@@ -61,6 +61,17 @@ log = logging.getLogger(__name__)
 # 35-46 s; 90 s lassen Luft, ohne dass jemand ewig auf die Meldung wartet.
 TIMEOUT_SECONDS = 90
 
+# Gemini antwortet deutlich schneller: 3,2 s bis 15,9 s je Bild in der Probe vom
+# 2026-09-20 (A22, Aufgabe 1.2). 60 s sind das Vierfache des gemessenen schlechtesten
+# Falls - wer länger braucht, hat den Import verloren, nicht das Bild.
+GEMINI_TIMEOUT_SECONDS = 60
+
+_TIMEOUTS = {
+    "gemini": GEMINI_TIMEOUT_SECONDS,
+    "openai": TIMEOUT_SECONDS,
+    "pollinations": TIMEOUT_SECONDS,
+}
+
 # Zeit für den Nachschlag, wenn ein OpenAI-kompatibler Anbieter statt der Bilddaten eine
 # URL liefert. Kurz, weil das reines Herunterladen ist.
 DOWNLOAD_TIMEOUT_SECONDS = 30
@@ -96,23 +107,48 @@ def _prompt(name: str, ingredients: list[str]) -> str:
     )
 
 
-def _fetch_pollinations(prompt: str) -> bytes:
+class ProviderError(RuntimeError):
+    """Der Anbieter hat mit einer Fehlerstufe geantwortet.
+
+    Trägt Stufe und (gekürzten) Körper, weil erst der Aufrufer entscheidet, was daraus
+    folgt: Guthaben leer, Modell unbekannt, oder einfach unbrauchbar. Ein Fehlschlag ohne
+    Antwort (Zeitüberschreitung, kein Netz) ist `requests.RequestException` und kommt hier
+    gar nicht an.
+    """
+
+    def __init__(self, status: int, body: str):
+        super().__init__(f"HTTP {status}: {body}")
+        self.status = status
+        self.body = body
+
+
+def _endpoint(kandidat: tuple[str, str]) -> tuple[str, str]:
+    """Adresse und Schlüssel des Anbieters dieses Kandidaten (`config.IMAGE_ENDPOINTS`).
+
+    Je Anbieter, nicht global: eine Kette kann in einem Import mehrere Anbieter ansprechen,
+    und der Schlüssel des einen darf dabei nie beim anderen landen.
+    """
+    return config.IMAGE_ENDPOINTS[kandidat[0]]
+
+
+def _fetch_pollinations(prompt: str, kandidat: tuple[str, str], timeout: float) -> bytes:
     """Bilddaten von Pollinations.ai. Wirft bei jeder Antwort, die kein Bild ist."""
-    base = config.IMAGE_BASE_URL.rstrip("/")
+    basis, schluessel = _endpoint(kandidat)
+    base = basis.rstrip("/")
     # safe="" - auch "/" muss kodiert werden, sonst zerfällt der Prompt in Pfadteile.
     url = f"{base}/prompt/{quote(prompt, safe='')}"
     headers = {}
-    if config.IMAGE_API_KEY:
-        headers["Authorization"] = f"Bearer {config.IMAGE_API_KEY}"
+    if schluessel:
+        headers["Authorization"] = f"Bearer {schluessel}"
 
     resp = requests.get(
         url,
-        params={"model": config.IMAGE_MODEL, "nologo": "true"},
+        params={"model": kandidat[1], "nologo": "true"},
         headers=headers,
-        timeout=TIMEOUT_SECONDS,
+        timeout=timeout,
     )
     if resp.status_code != 200:
-        raise ValueError(f"HTTP {resp.status_code}: {_shorten_body(resp)}")
+        raise ProviderError(resp.status_code, _shorten_body(resp))
 
     content_type = resp.headers.get("Content-Type", "")
     if not content_type.startswith("image/"):
@@ -120,26 +156,94 @@ def _fetch_pollinations(prompt: str) -> bytes:
     return resp.content
 
 
-def _fetch_openai_compatible(prompt: str) -> bytes:
+def _fetch_gemini(prompt: str, kandidat: tuple[str, str], timeout: float) -> bytes:
+    """Bilddaten von Gemini über die **native** Fläche.
+
+    Nicht über `/images/generations`: dort bildet dieser Anbieter auf `predict` ab, was
+    keines seiner Modelle führt (404, gemessen 2026-09-20). Gemessene Form der Anfrage und
+    der Antwort, kein Lesen der Dokumentation.
+
+    `aspectRatio: "1:1"` liefert 1024x1024 statt der Vorgabe 1408x768, **zum selben Preis**
+    (beides 1120 Bildtoken). Mealies Kachel würde das breitere Bild ohnehin beschneiden.
+    """
+    basis, schluessel = _endpoint(kandidat)
+    base = basis.rstrip("/")
+    resp = requests.post(
+        f"{base}/v1beta/models/{kandidat[1]}:generateContent",
+        headers={"x-goog-api-key": schluessel, "Content-Type": "application/json"},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"],
+                "imageConfig": {"aspectRatio": "1:1"},
+            },
+        },
+        timeout=timeout,
+    )
+    if resp.status_code != 200:
+        raise ProviderError(resp.status_code, _shorten_body(resp))
+    return _decode_gemini(resp.json())
+
+
+def _decode_gemini(payload: dict) -> bytes:
+    """Bilddaten aus der Antwort der nativen Fläche. Wirft bei jeder unerwarteten Form.
+
+    Die Antwort kann Text **und** Bild tragen, und sie kann ganz ohne Bildteil kommen -
+    ein Modell, das lieber antwortet, statt zu malen. Das ist keine Ausnahme des Anbieters,
+    sondern eine unbrauchbare Antwort: der Aufrufer geht zum nächsten Kandidaten.
+    """
+    kandidaten = payload.get("candidates")
+    if not isinstance(kandidaten, list) or not kandidaten:
+        raise ValueError("Antwort enthielt kein Feld 'candidates' mit Einträgen")
+
+    teile = []
+    for eintrag in kandidaten:
+        if isinstance(eintrag, dict):
+            inhalt = eintrag.get("content")
+            if isinstance(inhalt, dict) and isinstance(inhalt.get("parts"), list):
+                teile.extend(inhalt["parts"])
+
+    for teil in teile:
+        if not isinstance(teil, dict):
+            continue
+        inline = teil.get("inlineData") or teil.get("inline_data")
+        if not isinstance(inline, dict):
+            continue
+        kodiert = inline.get("data")
+        if isinstance(kodiert, str) and kodiert.strip():
+            return base64.b64decode(kodiert, validate=True)
+
+    raise ValueError("Antwort trug keinen Teil mit Bilddaten")
+
+
+def _fetch_openai_compatible(prompt: str, kandidat: tuple[str, str], timeout: float) -> bytes:
     """Bilddaten von einem OpenAI-kompatiblen Anbieter."""
-    base = config.IMAGE_BASE_URL.rstrip("/")
+    basis, schluessel = _endpoint(kandidat)
+    base = basis.rstrip("/")
     resp = requests.post(
         f"{base}/images/generations",
         headers={
-            "Authorization": f"Bearer {config.IMAGE_API_KEY}",
+            "Authorization": f"Bearer {schluessel}",
             "Content-Type": "application/json",
         },
         json={
-            "model": config.IMAGE_MODEL,
+            "model": kandidat[1],
             "prompt": prompt,
             "n": 1,
             "response_format": "b64_json",
         },
-        timeout=TIMEOUT_SECONDS,
+        timeout=timeout,
     )
     if resp.status_code != 200:
-        raise ValueError(f"HTTP {resp.status_code}: {_shorten_body(resp)}")
+        raise ProviderError(resp.status_code, _shorten_body(resp))
     return _decode(resp.json())
+
+
+_FETCHERS = {
+    "gemini": _fetch_gemini,
+    "openai": _fetch_openai_compatible,
+    "pollinations": _fetch_pollinations,
+}
 
 
 def _decode(payload: dict) -> bytes:
@@ -182,11 +286,12 @@ def generate(name: str, ingredients: list[str]) -> bytes | None:
         return None
 
     prompt = _prompt(name, ingredients)
-    fetch = _fetch_pollinations if config.IMAGE_PROVIDER == "pollinations" else _fetch_openai_compatible
+    kandidat = (config.IMAGE_PROVIDER, config.IMAGE_MODEL)
+    fetch = _FETCHERS[kandidat[0]]
 
-    log.info("Bilderzeugung für %r bei %s, Modell %s", name, config.IMAGE_PROVIDER, config.IMAGE_MODEL)
+    log.info("Bilderzeugung für %r bei %s, Modell %s", name, kandidat[0], kandidat[1])
     try:
-        data = fetch(prompt)
+        data = fetch(prompt, kandidat, _TIMEOUTS[kandidat[0]])
     except requests.RequestException as exc:
         log.warning("Bildmodell nicht erreichbar, Rezept %r bleibt ohne Bild: %s", name, exc)
         return None
