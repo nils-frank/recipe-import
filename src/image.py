@@ -45,14 +45,20 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from urllib.parse import quote
 
 import requests
 
 import config
+import image_chain
 import naming
 import prompts
-from llm import _image_mime
+from llm import _UNKNOWN_MODEL_MARKERS, _image_mime
+
+# Einzige Zeitquelle der Stufe, damit die Testreihe das Zeitbudget ohne Schlafen prüfen
+# kann (DESIGN.md §12). `monotonic` wie in `image_chain`.
+_now = time.monotonic
 
 log = logging.getLogger(__name__)
 
@@ -275,9 +281,64 @@ def _decode(payload: dict) -> bytes:
     raise ValueError("Der Eintrag in 'data' trug weder 'b64_json' noch 'url'")
 
 
+# Stufen, mit denen ein Anbieter sagt "dein Kontingent, dein Guthaben oder deine Rate ist
+# aufgebraucht". 429 ist der gemessene Fall bei beiden Anbietern; 402 und 403 nennen den
+# Grund nur im Text, deshalb dort die Marker.
+_EXHAUSTING_STATUS = {429}
+_EXHAUSTING_MARKERS = ("quota", "credit", "billing", "resource_exhausted", "exceeded")
+
+
+def _classify(exc: ProviderError) -> str:
+    """Was bedeutet diese Fehlerantwort für den Kandidaten?
+
+    Drei Ausgänge, weil sie drei verschiedene Gedächtnisdauern haben: "erschöpft" gilt für
+    die Sperrfrist, "unbekannt" für die Lebensdauer des Prozesses, "unbrauchbar" nur für
+    diesen einen Import. Die Marker für den unbekannten Modellnamen sind dieselben wie in
+    der Textstufe (`llm._UNKNOWN_MODEL_MARKERS`) - ein zurückgezogener Name soll in beiden
+    Stufen gleich erkannt werden.
+    """
+    text = exc.body.lower()
+    if exc.status in _EXHAUSTING_STATUS:
+        return "erschöpft"
+    if exc.status in (402, 403) and any(marker in text for marker in _EXHAUSTING_MARKERS):
+        return "erschöpft"
+    if exc.status == 404 or (exc.status == 400 and any(m in text for m in _UNKNOWN_MODEL_MARKERS)):
+        return "unbekannt"
+    return "unbrauchbar"
+
+
+def _usable(data: bytes, name: str, kandidat: tuple[str, str]) -> str | None:
+    """Prüft die Bilddaten und gibt den erkannten MIME-Typ zurück, oder `None`.
+
+    Dieselben drei Prüfungen wie bisher, nur jetzt je Kandidat: leer, zu gross, oder keine
+    Magic Bytes eines Bildes. Alle drei heissen "unbrauchbar", nicht "Fehler".
+    """
+    if not data:
+        log.warning("%s:%s lieferte leere Bilddaten für %r", kandidat[0], kandidat[1], name)
+        return None
+    if len(data) > MAX_IMAGE_BYTES:
+        log.warning(
+            "%s:%s lieferte %d Bytes für %r, mehr als die Grenze %d",
+            kandidat[0], kandidat[1], len(data), name, MAX_IMAGE_BYTES,
+        )
+        return None
+    try:
+        return _image_mime(data)
+    except Exception as exc:  # noqa: BLE001 - Bildstufe darf den Import nie scheitern lassen
+        log.warning(
+            "%s:%s lieferte kein lesbares Bild für %r: %s", kandidat[0], kandidat[1], name, exc
+        )
+        return None
+
+
 def generate(name: str, ingredients: list[str]) -> bytes | None:
     """Erzeugt ein Bild des Gerichts. `None`, wenn das aus irgendeinem Grund nicht
     gelingt oder die Stufe abgeschaltet ist.
+
+    Geht die Kette von oben nach unten durch und hört beim ersten brauchbaren Bild auf.
+    Höchstens **ein** Aufruf je Kandidat: ein Bildaufruf kostet Geld, und der nächste
+    Kandidat ist der bessere zweite Versuch. Die Liste wird einmal am Anfang geholt, also
+    kann derselbe Kandidat innerhalb eines Imports gar nicht zweimal drankommen.
 
     Wirft nie.
     """
@@ -285,35 +346,61 @@ def generate(name: str, ingredients: list[str]) -> bytes | None:
         log.info("Bildstufe ist per IMAGE_ENABLED abgeschaltet, kein Bild für %r", name)
         return None
 
+    kandidaten = image_chain.candidates()
+    if not kandidaten:
+        # Zwei verschiedene Lagen, zwei verschiedene Meldungen: alles gesperrt heisst
+        # "später nochmal", eine leere Kette heisst "falsch konfiguriert".
+        if image_chain.configured():
+            log.warning("Alle Bildkandidaten sind gerade gesperrt, %r bleibt ohne Bild", name)
+        else:
+            log.warning("Die Bildkette ist leer, %r bleibt ohne Bild", name)
+        return None
+
     prompt = _prompt(name, ingredients)
-    kandidat = (config.IMAGE_PROVIDER, config.IMAGE_MODEL)
-    fetch = _FETCHERS[kandidat[0]]
+    frist = _now() + config.IMAGE_DEADLINE_SECONDS
 
-    log.info("Bilderzeugung für %r bei %s, Modell %s", name, kandidat[0], kandidat[1])
-    try:
-        data = fetch(prompt, kandidat, _TIMEOUTS[kandidat[0]])
-    except requests.RequestException as exc:
-        log.warning("Bildmodell nicht erreichbar, Rezept %r bleibt ohne Bild: %s", name, exc)
-        return None
-    except Exception as exc:  # noqa: BLE001 - Bildstufe darf den Import nie scheitern lassen
-        log.warning("Antwort des Bildmodells unbrauchbar, Rezept %r bleibt ohne Bild: %s", name, exc)
-        return None
+    for kandidat in kandidaten:
+        anbieter, modell = kandidat
+        timeout = _TIMEOUTS[anbieter]
+        rest = frist - _now()
+        if rest < timeout:
+            # Bewusst kein gekürztes Zeitlimit: ein bezahlter Aufruf, der nicht zu Ende
+            # laufen darf, ist Geld für nichts. Lieber ohne Bild fertig werden.
+            log.warning(
+                "Zeitbudget der Bildstufe aufgebraucht (%.0fs übrig, %s:%s braucht %ds), "
+                "%r bleibt ohne Bild",
+                max(rest, 0.0), anbieter, modell, timeout, name,
+            )
+            return None
 
-    if not data:
-        log.warning("Das Bildmodell lieferte leere Bilddaten, Rezept %r bleibt ohne Bild", name)
-        return None
-    if len(data) > MAX_IMAGE_BYTES:
-        log.warning(
-            "Das gelieferte Bild ist mit %d Bytes zu gross (Grenze %d), Rezept %r bleibt ohne Bild",
-            len(data), MAX_IMAGE_BYTES, name,
-        )
-        return None
+        log.info("Bilderzeugung für %r bei %s, Modell %s", name, anbieter, modell)
+        try:
+            data = _FETCHERS[anbieter](prompt, kandidat, timeout)
+        except ProviderError as exc:
+            grund = _classify(exc)
+            if grund == "erschöpft":
+                image_chain.mark_exhausted(kandidat)
+            elif grund == "unbekannt":
+                image_chain.mark_unknown(kandidat)
+            log.warning("%s:%s antwortete %s (%s), weiter zum nächsten Kandidaten",
+                        anbieter, modell, exc.status, grund)
+            continue
+        except requests.RequestException as exc:
+            log.warning("%s:%s war nicht erreichbar (%s), weiter zum nächsten Kandidaten",
+                        anbieter, modell, exc)
+            continue
+        except Exception as exc:  # noqa: BLE001 - Bildstufe darf den Import nie scheitern lassen
+            log.warning("%s:%s antwortete unbrauchbar (%s), weiter zum nächsten Kandidaten",
+                        anbieter, modell, exc)
+            continue
 
-    try:
-        mime = _image_mime(data)
-    except Exception as exc:  # noqa: BLE001 - Bildstufe darf den Import nie scheitern lassen
-        log.warning("Das Bildmodell lieferte kein lesbares Bild, Rezept %r bleibt ohne Bild: %s", name, exc)
-        return None
+        mime = _usable(data, name, kandidat)
+        if mime is None:
+            continue
 
-    log.info("Bild für %r erzeugt: %d Bytes, %s", name, len(data), mime)
-    return data
+        log.info("Bild für %r von %s:%s erzeugt: %d Bytes, %s",
+                 name, anbieter, modell, len(data), mime)
+        return data
+
+    log.warning("Kein Kandidat der Bildkette lieferte ein Bild, %r bleibt ohne Bild", name)
+    return None

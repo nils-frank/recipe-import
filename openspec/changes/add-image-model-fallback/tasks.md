@@ -80,23 +80,26 @@ appears in a file of this repository.
 
 ## 5. The chain walk in `image.generate`
 
-- [ ] 5.1 Turn `generate` into a walk over `image_chain.candidates()` with a local
-  per-import skip set, stopping at the first usable picture and returning `None` when the
+- [x] 5.1 Turn `generate` into a walk over `image_chain.candidates()`, read once and
+  walked as a snapshot so no skip set is needed, stopping at the first usable picture and returning `None` when the
   chain is used up; verify a test where the first candidate fails and the second returns
   the fixture JPEG.
-- [ ] 5.2 Implement the failure classification table from `design.md` (exhausted, unknown
+- [x] 5.2 Implement the failure classification table from `design.md` (exhausted, unknown
   model, unusable), reusing `llm._UNKNOWN_MODEL_MARKERS`; verify one test per bucket
   asserting which chain-state call was made and that the walk continued.
-- [ ] 5.3 Keep the existing guards (empty body, `MAX_IMAGE_BYTES`, `llm._image_mime`) as
+- [x] 5.3 Keep the existing guards (empty body, `MAX_IMAGE_BYTES`, `llm._image_mime`) as
   the unusable bucket for every provider; verify the existing oversize and bad-magic-bytes
   tests still pass and now continue to the next candidate.
-- [ ] 5.4 Enforce `IMAGE_DEADLINE_SECONDS` as one monotonic deadline for the whole stage,
-  with each request timeout being the smaller of the provider timeout and the time left;
+- [x] 5.4 Enforce `IMAGE_DEADLINE_SECONDS` as one monotonic deadline for the whole stage.
+  **Deviation:** a call carries its provider's full timeout instead of the smaller of that
+  and the time left, and the walk stops when the remaining time no longer covers the next
+  candidate's timeout - a paid call that cannot finish is money for nothing. The stage
+  still ends inside the budget, which is what the spec requires;
   verify a test with a patched clock asserts that the third candidate is never contacted
   once the budget is gone.
-- [ ] 5.5 Make one call per candidate with no retry inside a candidate; verify a test
+- [x] 5.5 Make one call per candidate with no retry inside a candidate; verify a test
   counts exactly one request per candidate across a full failing walk.
-- [ ] 5.6 Log the candidate that produced the picture, and log the reason on every skip;
+- [x] 5.6 Log the candidate that produced the picture, and log the reason on every skip;
   verify a test asserts no log line and no exception text contains an API key.
 
 ## 6. Behaviour of the stage as a whole

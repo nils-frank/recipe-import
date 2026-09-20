@@ -21,6 +21,7 @@ import pytest
 import app as app_module
 import config
 import image
+import image_chain
 import mealie_client
 import prompts
 from classify import normalize_url, url_hash
@@ -81,11 +82,20 @@ def _media_answers(monkeypatch):
     monkeypatch.setattr(mealie_client.requests, "get", fake_get)
 
 
+def _kette(monkeypatch, *kandidaten):
+    """Stellt die Bildkette für einen Test. Ohne das liefe jeder Anbietertest die
+    Vorgabekette von oben durch und spräche dabei Anbieter an, die er gar nicht prüft."""
+    monkeypatch.setattr(config, "IMAGE_MODEL_CHAIN", list(kandidaten))
+    image_chain.reset()
+
+
 @pytest.fixture
 def image_on(monkeypatch):
     """Hebt die autouse-Abschaltung aus conftest.py für die Tests auf, die die Stufe
-    selbst prüfen."""
+    selbst prüfen. Die Kette steht dabei auf dem einen Anbieter, den der jeweilige
+    Abschnitt prüft; die Kettentests weiter unten stellen sie selbst."""
     monkeypatch.setattr(config, "IMAGE_ENABLED", True)
+    _kette(monkeypatch, ("pollinations", "sana"))
 
 
 def _recipe() -> Recipe:
@@ -231,6 +241,7 @@ def openai_provider(monkeypatch):
     monkeypatch.setitem(
         config.IMAGE_ENDPOINTS, "openai", ("https://llm.example/v1", "test-platzhalter-image-key")
     )
+    _kette(monkeypatch, ("openai", config.IMAGE_MODEL))
 
 
 def test_pollinations_returns_image_bytes(monkeypatch, image_on):
@@ -343,6 +354,7 @@ def gemini_provider(monkeypatch):
         "gemini",
         ("https://generativelanguage.example/v1beta-basis", "test-platzhalter-llm-key"),
     )
+    _kette(monkeypatch, ("gemini", "gemini-3-pro-image"))
 
 
 def _gemini_answer(*parts) -> dict:
