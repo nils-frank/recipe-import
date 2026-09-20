@@ -108,9 +108,12 @@ Alles über Umgebungsvariablen, gelesen in `config.py`, sonst nirgends. Stil wie
 | `MAX_PDF_PAGES` | nein | `10` | mehr Seiten werden nicht gelesen, siehe §6 |
 | `NAMING_ENABLED` | nein | `true` | Namensstufe, siehe §5 und §6 `naming.make_name` |
 | `IMAGE_ENABLED` | nein | `true` | Bildstufe, siehe §5 und §6 `image.generate` |
-| `IMAGE_PROVIDER` | nein | `pollinations` | oder `openai`; unbekannter Wert fällt auf die Vorgabe zurück |
-| `IMAGE_MODEL` | nein | `sana` (bzw. `imagen-4.0-generate-001` bei `openai`) | fest verdrahtet, ein Modellwechsel ist hier eine bewusste Änderung |
-| `IMAGE_BASE_URL` | nein | `https://image.pollinations.ai` (bzw. `LLM_BASE_URL`) | Vorgabe je Anbieter |
+| `IMAGE_MODEL_CHAIN` | nein | `gemini:gemini-3-pro-image, gemini:gemini-3.1-flash-image, pollinations:sana` | geordnete Kette `Anbieter:Modell`, bestes zuerst (A22); unbrauchbarer Eintrag fällt mit Warnung weg |
+| `IMAGE_MODEL_COOLDOWN_SECONDS` | nein | `3600` | so lange wird ein Kandidat übersprungen, der Kontingent oder Guthaben als leer gemeldet hat |
+| `IMAGE_DEADLINE_SECONDS` | nein | `150` | Zeitbudget der **ganzen** Bildstufe je Import, nicht eines Aufrufs |
+| `IMAGE_PROVIDER` | nein | `pollinations` | `gemini`, `openai` oder `pollinations`; unbekannter Wert fällt auf die Vorgabe zurück. Ausdrücklich gesetzt, wandert das Paar mit `IMAGE_MODEL` an die Spitze der Kette |
+| `IMAGE_MODEL` | nein | `sana` (bzw. `gemini-3-pro-image` / `imagen-4.0-generate-001`) | fest verdrahtet, ein Modellwechsel ist hier eine bewusste Änderung |
+| `IMAGE_BASE_URL` | nein | Vorgabe des Anbieters aus `IMAGE_PROVIDER` | überschreibt **nur** dessen Eintrag, nicht die der übrigen Anbieter |
 | `IMAGE_API_KEY` | nein | leer (bzw. `LLM_API_KEY`) | bei `pollinations` bewusst leer: kein fremder Schlüssel an eine andere Firma |
 | `QUEUE_POLL_SECONDS` | nein | `30` | Takt der Warteschlangenschleife, siehe §5 |
 | `QUEUE_BACKOFF_BASE_MINUTES` | nein | `2` | Rückzug in Minuten, `base * factor ** (Versuche - 1)` |
@@ -437,28 +440,53 @@ Fehlschlag endet in `None` und einer Warnung. Sie läuft erst, wenn das Rezept i
 existiert und `store.finish()` gelaufen ist - ein Fehlschlag kann deshalb keinen zweiten
 Import auslösen, sondern kostet nur das Bild.
 
-Der Anbieter steht in `IMAGE_PROVIDER`, weil die beiden Formen sich nicht ineinander
-übersetzen lassen:
+Seit A22 spricht die Stufe nicht **einen** Anbieter an, sondern geht eine geordnete Kette
+von Kandidaten `Anbieter:Modell` durch (`IMAGE_MODEL_CHAIN`, Zustand in
+`src/image_chain.py`). Drei Anbieterformen, weil sie sich nicht ineinander übersetzen
+lassen:
 
-* `pollinations` (Vorgabe): `GET {IMAGE_BASE_URL}/prompt/{Prompt}`, der Prompt urlkodiert
-  im Pfad, der Antwortkörper **ist** das Bild. Ohne Konto und ohne Schlüssel.
-* `openai`: `POST {IMAGE_BASE_URL}/images/generations`, gelesen werden `data[0].b64_json`
-  und ersatzweise `data[0].url`. `llm._post` passt dafür nicht: der ist fest auf
+* `gemini`: `POST {Basis}/v1beta/models/{Modell}:generateContent`, Schlüssel im Kopf
+  `x-goog-api-key`, das Bild als base64 in `inlineData`. **Nicht** über
+  `/images/generations` - dort bildet dieser Anbieter auf `predict` ab, was keines seiner
+  Modelle führt (404, gemessen 2026-09-20). Die Anfrage verlangt `aspectRatio: "1:1"`:
+  1024x1024 zum selben Preis wie die Vorgabe 1408x768, und Mealies Kachel beschneidet das
+  breitere Bild ohnehin.
+* `pollinations`: `GET {Basis}/prompt/{Prompt}`, der Prompt urlkodiert im Pfad, der
+  Antwortkörper **ist** das Bild. Ohne Konto und ohne Schlüssel.
+* `openai`: `POST {Basis}/images/generations`, gelesen werden `data[0].b64_json` und
+  ersatzweise `data[0].url`. `llm._post` passt dafür nicht: der ist fest auf
   `/chat/completions` samt erzwungenem JSON-Schema.
 
-Warum nicht der Anbieter des Textmodells: dessen Schlüssel kann keine Bilder erzeugen.
-Gemessen am 2026-09-20 antworten dort alle Bildmodelle 429 "free_tier ... limit: 0", auch
-mit einem Schlüssel aus einem frisch angelegten Projekt - das Kontingent ist auf
-Kontoebene null. Pollinations lieferte in derselben Probe 200 `image/jpeg`, 768x768,
-46-73 KB, 35-46 s je Bild. Ohne Token sind dort `nologo`, `width` und `height` wirkungslos:
-jedes Bild trägt unten rechts ein `pollinations.ai`-Wasserzeichen. Das ist hingenommen -
-ein erzeugtes Bild ist ohnehin als `ki-bild` gekennzeichnet, und Zuschneiden bräuchte eine
-Bildbibliothek, die dieser Dienst nicht trägt. Ein kostenloses Token in `IMAGE_API_KEY`
-(zweite Probe am 2026-09-20) wird erkannt und hebt die feste Kantenlänge auf, das
-Wasserzeichen jedoch nicht - dafür braucht es eine bezahlte Stufe des Dienstes.
+Warum die Reihenfolge so: der Gemini-Schlüssel konnte am 2026-09-20 zunächst **keine**
+Bilder erzeugen (alle Bildmodelle 429 "free_tier ... limit: 0", auch aus einem frisch
+angelegten Projekt). Mit $5 Guthaben auf demselben Konto antworten alle fünf Bildmodelle
+200 mit einem echten Bild, ohne Wasserzeichen: `gemini-3-pro-image` in 15,3 s für $0,134,
+`gemini-3.1-flash-image` in 8,6 s für $0,067. Pollinations kostet nichts, braucht 35-46 s
+und trägt unten rechts ein `pollinations.ai`-Wasserzeichen, das auch ein kostenloses Token
+nicht entfernt. Deshalb steht das bezahlte Modell oben und das kostenlose als Boden
+darunter: ein aufgebrauchtes Guthaben kostet Bildqualität, nicht das Bild.
 
-Zeitlimit 90 Sekunden, **kein** zweiter Versuch, Anfragegrösse begrenzt auf 10 Zutaten.
-Die Bytes müssen JPEG, PNG oder WebP sein (`llm._image_mime`) und höchstens 12 MB gross.
+Ein abgewiesener Kandidat reicht dieselbe Anfrage nach unten weiter. Was sich die Kette
+dabei merkt, hängt am Grund: leeres Kontingent oder Guthaben (429, oder 402/403 mit
+entsprechendem Text) sperrt ihn für `IMAGE_MODEL_COOLDOWN_SECONDS`, ein unbekannter
+Modellname (404, oder 400 mit den Markern aus `llm`) nimmt ihn für die Lebensdauer des
+Prozesses aus der Kette, alles andere gilt nur für diesen Import. Der Zustand liegt im
+Prozess; ein Neustart fängt oben an.
+
+**Höchstens ein Aufruf je Kandidat**, kein zweiter Versuch beim selben - ein Bildaufruf
+ist der teuerste Aufruf dieses Dienstes, und der nächste Kandidat ist der bessere zweite
+Versuch. Zeitlimit je Aufruf 60 s (Gemini) beziehungsweise 90 s, und darüber ein Budget
+für die ganze Stufe (`IMAGE_DEADLINE_SECONDS`, 150 s): reicht die Restzeit nicht mehr für
+das volle Zeitlimit des nächsten Kandidaten, endet der Gang ohne Bild. Ein gekürztes
+Zeitlimit gäbe es nicht - ein bezahlter Aufruf, der nicht zu Ende laufen darf, ist Geld
+für nichts. Anfragegrösse weiter begrenzt auf 10 Zutaten; die Bytes müssen JPEG, PNG oder
+WebP sein (`llm._image_mime`) und höchstens 12 MB gross.
+
+Adresse und Schlüssel stehen je Anbieter in `config.IMAGE_ENDPOINTS`. `IMAGE_BASE_URL` und
+`IMAGE_API_KEY` überschreiben genau den Eintrag des Anbieters aus `IMAGE_PROVIDER` - eine
+einzelne Überschreibung für alle Anbieter wäre der Weg, auf dem der Schlüssel des
+Textmodells bei Pollinations landet. Die Gemini-Basis wird aus `LLM_BASE_URL` abgeleitet
+(Suffix `/openai` entfällt), damit die beiden Adressen nicht auseinanderlaufen.
 
 Ob überhaupt erzeugt wird, entscheidet `app._attach_image`: auf dem JSON-LD-Weg immer
 (`to_jsonld` kennt kein Bildfeld), auf dem `import_url`-Weg nur, wenn
