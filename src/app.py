@@ -97,8 +97,12 @@ async def healthz() -> dict:
 async def import_recipe(request: Request, background_tasks: BackgroundTasks) -> dict:
     try:
         body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Kein gültiges JSON im Anfragetext")
+    except Exception as exc:
+        # Der Antworttext bleibt die kurze deutsche Meldung - der Aufrufer ist der
+        # Kurzbefehl, dem ein Parserfehler nichts sagt. `from exc` hängt die Ursache
+        # aber an die Ausnahme, damit sie im Serverprotokoll auftaucht statt zu
+        # verschwinden.
+        raise HTTPException(status_code=400, detail="Kein gültiges JSON im Anfragetext") from exc
 
     url = (body or {}).get("url") if isinstance(body, dict) else None
     if not isinstance(url, str) or not url.strip():
