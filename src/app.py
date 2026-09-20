@@ -47,6 +47,17 @@ FILE_URL_PREFIX = "datei:"
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
 log = logging.getLogger(__name__)
 
+# Starke Referenzen auf die beim Start wiederaufgenommenen Importe. asyncio hält eine
+# laufende Aufgabe nur schwach: ohne diese Menge kann der Sammler eine Wiederaufnahme
+# mitten im Lauf einsammeln, und der unterbrochene Import bliebe für immer "pending",
+# ohne dass irgendwo ein Fehler auftaucht. Der Callback räumt den Eintrag wieder ab.
+_resume_tasks: set[asyncio.Task] = set()
+
+
+def _track(task: asyncio.Task) -> None:
+    _resume_tasks.add(task)
+    task.add_done_callback(_resume_tasks.discard)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -70,7 +81,7 @@ async def lifespan(app: FastAPI):
         # aus Befund 3 (Review A8) erneut versuchen, der auf einem schon pending-
         # Eintrag scheitert (die WHERE-Klausel lässt nur `failed` -> `pending` zu) und
         # die Wiederaufnahme verhindern würde.
-        asyncio.create_task(_run_import(entry["url_hash"], entry["url"]))
+        _track(asyncio.create_task(_run_import(entry["url_hash"], entry["url"])))
     yield
 
 

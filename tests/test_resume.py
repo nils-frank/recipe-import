@@ -57,3 +57,45 @@ def test_done_entry_is_not_resumed_on_startup(monkeypatch, isolated_store):
     asyncio.run(run())
 
     resumed.assert_not_called()
+
+
+def test_resumed_task_is_referenced_until_it_finishes(monkeypatch, isolated_store):
+    """RUF006 (A22): der Wiederaufnahme-Task wird festgehalten, bis er fertig ist.
+
+    `asyncio` hält eine laufende Aufgabe nur schwach. Ohne starke Referenz kann der
+    Sammler eine Wiederaufnahme mitten im Lauf einsammeln - der Import bliebe still
+    `pending`. Der Test prüft beides: während der Lauf hängt, steht der Task in
+    `app._resume_tasks`; danach ist er durchgelaufen und wieder ausgetragen.
+    """
+    url = "https://example.com/rezepte/kaiserschmarrn"
+    h = url_hash(url)
+    isolated_store.start(h, url)
+
+    gestartet = asyncio.Event()
+    weiter = asyncio.Event()
+    fertig = asyncio.Event()
+
+    async def langsamer_import(url_hash_: str, url_: str) -> None:
+        gestartet.set()
+        await weiter.wait()
+        fertig.set()
+
+    monkeypatch.setattr(app_module, "_run_import", langsamer_import)
+
+    async def run() -> None:
+        async with app_module.lifespan(app_module.app):
+            await asyncio.wait_for(gestartet.wait(), timeout=1)
+            laufende = [t for t in app_module._resume_tasks if not t.done()]
+            assert len(laufende) == 1, "Wiederaufnahme wird nicht festgehalten"
+            task = laufende[0]
+
+            weiter.set()
+            await asyncio.wait_for(fertig.wait(), timeout=1)
+            await task
+            # Der done-Callback läuft über call_soon, also erst im nächsten Umlauf.
+            await asyncio.sleep(0)
+
+            assert task.done() and task.exception() is None
+            assert task not in app_module._resume_tasks, "Callback trägt den Task nicht aus"
+
+    asyncio.run(run())
