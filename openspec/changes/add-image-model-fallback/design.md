@@ -206,9 +206,10 @@ the paid candidates above it are the ones that should be tried first anyway.
 `candidates()`, `mark_exhausted(candidate)`, `mark_unknown(candidate)`, `reset()`, a
 module-level `_now = time.monotonic` and a `threading.Lock`, mirroring `model_chain.py`
 down to the names so that a reader who knows one knows the other. The key is the
-`provider:model` pair, so the same model name on two providers is two candidates. The
-per-import skip list is *not* module state: it is a local set inside `generate`, because it
-means "already tried in this walk" and must not outlive the walk.
+`provider:model` pair, so the same model name on two providers is two candidates. What one
+import has already tried is deliberately not module state: `generate` reads the candidate
+list once and walks that snapshot, which by construction asks each candidate at most once
+and forgets it at the end of the walk.
 
 State is in-process only. A restart begins at the configured order again, which is the same
 trade-off A21 already accepted and documented.
@@ -218,8 +219,10 @@ trade-off A21 already accepted and documented.
 `IMAGE_DEADLINE_SECONDS` (default 150) is turned into a monotonic deadline when `generate`
 starts. Before each candidate the remaining time is computed; if it is not enough for that
 candidate's own timeout, the walk stops and the import completes without a picture. Each
-call still carries a per-request timeout, and the request timeout is the smaller of the
-provider's timeout and the time left.
+call carries its provider's full timeout rather than a truncated one: a paid call that is
+not allowed to finish is money for nothing, so the stage would rather end without a
+picture. Checking before each call is what keeps the stage inside the budget, since a call
+only starts when its whole timeout still fits.
 
 150 seconds is measurement plus headroom. Measured per picture: the Gemini candidates
 answered in 3.2 to 15.9 s, Pollinations in 35-46 s. A walk that fails at both Gemini
