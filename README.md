@@ -61,8 +61,12 @@ See `.env.example` for every configuration value and which are required.
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
+ruff check src tests
 pytest
 ```
+
+The linter config lives in `pyproject.toml`; CI runs exactly the same two commands, so a
+green local run is a green build.
 
 Tests run entirely offline against recorded fixtures (`tests/fixtures/`) - no network
 access, no real Mealie/HA/LLM credentials needed (`tests/conftest.py` sets placeholder

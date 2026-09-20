@@ -642,3 +642,19 @@ sehen bekommt.
 
 Protokollierung über `logging`, nie `print`. Kein Token und kein API-Key darf je in einer
 Protokollzeile landen.
+
+Den mechanischen Teil dieser Regeln erzwingt seit A22 `ruff` (gepinnt in
+`requirements-dev.txt`, konfiguriert in `pyproject.toml`, in CI derselbe Aufruf wie
+lokal: `ruff check src tests`). Eingeschaltet sind `E`, `F`, `I`, `B`, `BLE`, `C4` und
+`RUF` bei einer Zeilenlänge von 110 - also Importreihenfolge, Zeilenlänge und die
+fehlerträchtigen Muster, nicht der Wortlaut und nicht die Kommentardichte: das bleibt
+eine menschliche Entscheidung, und einen Formatierer gibt es bewusst nicht.
+
+`BLE001` bleibt absichtlich an. Die Stufen, die nie werfen dürfen (Namensstufe,
+Aufräumarbeiten und alles, was nach dem Anlegen in Mealie noch folgt), fangen breit,
+jede einen Vermerk in der Form `# noqa: BLE001 - <Grund>`, den `src/sources/site.py`
+schon vorher benutzt hat. So bleibt der nächste unbedachte `except Exception` ein Fund,
+statt in einer globalen Ausnahme unterzugehen. Dieselbe Form gilt für jede andere
+Ausnahme von einer Regel: Code, Bindestrich, ein kurzer Grund auf Deutsch. `B008` ist
+für FastAPIs `File`/`Header`/`Depends` in der Konfiguration ausgenommen, weil das dort
+die vorgesehene Schreibweise ist.
