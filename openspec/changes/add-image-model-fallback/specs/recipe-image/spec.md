@@ -1,0 +1,200 @@
+# Spec Delta
+
+## ADDED Requirements
+
+### Requirement: Ordered chain of image candidates
+
+The picture stage SHALL choose its image source from an ordered list of candidates, best
+first. Each candidate names an image provider and a model served by that provider. The
+first candidate is the one normally used; the remaining candidates are fallbacks reached
+only when an earlier candidate cannot deliver a picture within the rules below. The list
+SHALL be configurable, and its configured default SHALL name the paid Gemini image models
+before the free provider. A configuration naming a single candidate SHALL be accepted and
+SHALL behave as a chain of length one.
+
+A picture obtained from a fallback candidate SHALL be treated exactly like one from the
+first candidate: same prompt, same size ceiling, same format check, same upload, and the
+same generated-picture tag.
+
+#### Scenario: First candidate delivers
+
+- **WHEN** a picture is generated and the first candidate answers with a usable image
+- **THEN** that picture is attached and no other candidate is contacted
+
+#### Scenario: Picture comes from a fallback candidate
+
+- **WHEN** the first candidate cannot deliver and a later candidate answers with a usable
+  image
+- **THEN** that picture is attached and tagged as generated exactly as a picture from the
+  first candidate would be, and the import reports success as usual
+
+#### Scenario: Single configured candidate
+
+- **WHEN** the chain is configured with exactly one candidate
+- **THEN** the stage behaves as it did before this change: one call, and no picture if
+  that call does not deliver one
+
+### Requirement: A rejected candidate hands the request to the next one
+
+When a candidate rejects the request because its quota, credit or rate limit is spent, the
+service SHALL skip that candidate and send the same, unchanged prompt to the next
+candidate in the chain. When a candidate's provider reports that it does not know the
+named model, the service SHALL skip that candidate and continue with the next one. When a
+candidate answers with something that is not a usable image, the service SHALL skip that
+candidate and continue with the next one, without asking the same candidate again.
+
+#### Scenario: Paid credit is spent
+
+- **WHEN** the first candidate answers that its quota or credit is exhausted
+- **THEN** the same prompt is sent to the next candidate, and a picture from that
+  candidate is attached as normal
+
+#### Scenario: Provider does not know the model
+
+- **WHEN** a candidate's provider answers that the named model does not exist
+- **THEN** that candidate is skipped, the next candidate is asked, and the import is
+  unaffected
+
+#### Scenario: Candidate answers with something unusable
+
+- **WHEN** a candidate answers with an empty body, an unexpected shape, or bytes that are
+  not a JPEG, PNG or WebP image
+- **THEN** that candidate is not asked again for this import and the next candidate is
+  asked
+
+#### Scenario: No candidate delivers
+
+- **WHEN** every candidate in the chain has been skipped
+- **THEN** no picture is attached, no generated-picture tag is set, the import is still
+  reported as successful, and the reason is logged
+
+### Requirement: An exhausted candidate is remembered
+
+A candidate that reported its quota, credit or rate limit spent SHALL be skipped for a
+configurable cooldown before it is tried again, so that a spent budget costs one rejected
+call per cooldown rather than one per import. The memory SHALL live in the running service
+only; a restart SHALL start again at the first candidate. A candidate whose model the
+provider does not know SHALL be skipped for as long as the service runs, independently of
+any clock.
+
+Nothing SHALL have to be reconfigured for the transition in either direction: when the
+paid candidates are exhausted the stage keeps producing pictures from the free candidate,
+and once the cooldown passes the paid candidate is tried again on the next import.
+
+#### Scenario: Second import after the credit ran out
+
+- **WHEN** a candidate was marked exhausted during an earlier import and the cooldown has
+  not passed
+- **THEN** the next import does not call that candidate at all and starts with the first
+  candidate that is not marked
+
+#### Scenario: Cooldown has passed
+
+- **WHEN** the cooldown of an exhausted candidate has passed
+- **THEN** the next import tries that candidate again before the ones below it
+
+#### Scenario: Service restarts
+
+- **WHEN** the service is restarted after candidates were marked
+- **THEN** the chain starts at its configured order again
+
+### Requirement: The picture stage stays within a total time budget
+
+The picture stage SHALL stop walking the chain once a configurable total time budget for
+one import is used up, whether or not candidates remain. The budget SHALL cover the whole
+stage, not a single call, so that a chain of several candidates cannot delay the import's
+push notification by the sum of its timeouts.
+
+#### Scenario: Early candidates are slow
+
+- **WHEN** the candidates tried so far have used up the stage's time budget and further
+  candidates remain
+- **THEN** no further candidate is contacted, the import completes without a picture, and
+  the reason is logged
+
+#### Scenario: Budget is not reached
+
+- **WHEN** a candidate delivers a picture before the budget is used up
+- **THEN** the picture is attached as normal
+
+## MODIFIED Requirements
+
+### Requirement: The picture stage is configurable
+
+The stage SHALL be controlled by configuration: an on/off switch that is on by default,
+the ordered chain of candidates described above, the cooldown for an exhausted candidate,
+the stage's total time budget, and optional overrides for each provider's base URL and API
+key. The overrides SHALL default per provider: to the values already configured for the
+text model when the provider is the same provider that serves the text model, and to that
+provider's own address with no key otherwise. The service SHALL NOT send the text model's
+API key to a provider other than the text model's own. No new mandatory configuration
+value SHALL be introduced, so an existing deployment starts unchanged apart from the new
+behaviour, and a configuration that pins a single provider and model SHALL keep that pair
+as the first candidate.
+
+#### Scenario: Stage switched off
+
+- **WHEN** the switch is off and an import finishes for a recipe without an image
+- **THEN** no image call is made, no picture is attached, no generated-picture tag is set,
+  and the import completes as before
+
+#### Scenario: Deployment upgrades without touching its configuration
+
+- **WHEN** the service starts with a configuration that names none of the new values
+- **THEN** the service starts successfully, the stage is on, and it uses the default chain
+  with the credentials each provider defaults to
+
+#### Scenario: Existing configuration pins a provider and model
+
+- **WHEN** a deployment has an image provider and image model configured explicitly
+- **THEN** that pair is the first candidate of the chain and the remaining default
+  candidates follow it as fallbacks
+
+#### Scenario: Separate image provider configured
+
+- **WHEN** an image base URL and image API key are configured
+- **THEN** image generation uses those values while recipe extraction and naming keep
+  using the text-model configuration
+
+#### Scenario: Default provider needs no key
+
+- **WHEN** a candidate names the free provider and no key is configured for it
+- **THEN** its picture is generated without any credential, and the text model's API key
+  is not sent to that provider
+
+#### Scenario: Provider switched to an OpenAI-compatible one
+
+- **WHEN** a candidate names the OpenAI-compatible kind of provider
+- **THEN** the stage calls that provider's image endpoint with a JSON request, reads the
+  picture out of its JSON answer, uses that provider's own credential, and every other
+  behaviour of the stage is unchanged
+
+### Requirement: At most one image call per import
+
+The stage SHALL make at most one image generation call per candidate per import, SHALL
+stop at the first usable picture, and SHALL never ask the same candidate twice within one
+import. The number of calls one import can cause SHALL therefore be bounded by the length
+of the chain, and further bounded by the stage's total time budget. An import that is
+skipped as a duplicate, that fails before the recipe exists in Mealie, or whose recipe
+already has an image SHALL make no image call at all.
+
+#### Scenario: Generation answer is unusable
+
+- **WHEN** a candidate returns an unusable answer
+- **THEN** that candidate is not asked a second time, and the stage either continues with
+  the next candidate or, if none is left, completes the import without a picture
+
+#### Scenario: A candidate delivers
+
+- **WHEN** a candidate answers with a usable picture
+- **THEN** no further image call is made for that import
+
+#### Scenario: Import fails before the recipe exists
+
+- **WHEN** extraction fails or Mealie rejects the recipe
+- **THEN** no image call is made
+
+#### Scenario: Recipe already has an image
+
+- **WHEN** the recipe in Mealie already carries an image
+- **THEN** no candidate is contacted at all
