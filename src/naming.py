@@ -133,7 +133,7 @@ def make_name(
         candidate = data["name"]
         if not isinstance(candidate, str):
             raise ValueError(f"Feld 'name' war {type(candidate).__name__}, nicht str")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Namensstufe darf den Import nie scheitern lassen
         log.warning("Namensstufe fuer %s fehlgeschlagen, behalte Namen %r: %s", source, name, exc)
         return None
 
