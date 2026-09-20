@@ -64,6 +64,19 @@ def frische_modellkette(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def frische_bildkette():
+    """Die Bildkette (A22) merkt sich prozessweit, welcher Kandidat erschöpft oder
+    unbekannt ist - genau dafür ist sie da. In einer Testreihe hiesse das, dass ein Test,
+    der ein 429 nachstellt, dem nächsten die Kette leerräumt. Deshalb fängt jeder Test mit
+    der konfigurierten Kette an, wie bei der Modellkette oben."""
+    import image_chain
+
+    image_chain.reset()
+    yield
+    image_chain.reset()
+
+
+@pytest.fixture(autouse=True)
 def naming_off(monkeypatch):
     """Die Namensstufe (A18) ist im Dienst standardmässig an und ruft dabei das
     Sprachmodell. Für die Testreihe gilt DESIGN.md §12 "ohne jeden Netzzugriff", deshalb
