@@ -134,16 +134,19 @@ def read(uploads: list[Upload]) -> SourceResult:
     if not uploads:
         raise UnsupportedFileError("Es war keine Datei dabei.")
 
+    # `kinds` entsteht Element für Element aus `uploads`, die Längen können also nicht
+    # auseinanderlaufen. Deshalb steht unten überall `strict=True`: ein Unterschied
+    # wäre ein Fehler in dieser Funktion und soll auffallen, nicht stumm kürzen.
     kinds = [_kind(u) for u in uploads]
 
-    heic = [u.filename for u, k in zip(uploads, kinds) if k in HEIC_CONTENT_TYPES]
+    heic = [u.filename for u, k in zip(uploads, kinds, strict=True) if k in HEIC_CONTENT_TYPES]
     if heic:
         raise UnsupportedFileError(
             f"{heic[0]} ist ein HEIC-Bild. Bild im Kurzbefehl nach JPEG umwandeln, "
             "dann klappt es."
         )
 
-    unknown = [(u.filename, k) for u, k in zip(uploads, kinds)
+    unknown = [(u.filename, k) for u, k in zip(uploads, kinds, strict=True)
                if k != PDF_CONTENT_TYPE and k not in IMAGE_CONTENT_TYPES]
     if unknown:
         name, kind = unknown[0]
@@ -151,8 +154,8 @@ def read(uploads: list[Upload]) -> SourceResult:
             f"{name} ist vom Typ {kind}. Ich lese PDF, JPEG, PNG und WebP."
         )
 
-    pdfs = [u for u, k in zip(uploads, kinds) if k == PDF_CONTENT_TYPE]
-    images = [u for u, k in zip(uploads, kinds) if k in IMAGE_CONTENT_TYPES]
+    pdfs = [u for u, k in zip(uploads, kinds, strict=True) if k == PDF_CONTENT_TYPE]
+    images = [u for u, k in zip(uploads, kinds, strict=True) if k in IMAGE_CONTENT_TYPES]
 
     if pdfs and images:
         raise UnsupportedFileError("PDF und Bilder gemischt. Bitte getrennt teilen.")
