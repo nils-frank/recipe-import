@@ -249,7 +249,7 @@ def _reject_if_placeholder(slug: str, normalized: str) -> tuple[str | None, dict
     Information wäre eine verdoppelte Anfrage (recipe-naming-plan.md §2.1)."""
     try:
         recipe_data = mealie_client.get_recipe(slug)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Platzhalter-Pruefung darf den Import nie stoppen
         log.warning("Platzhalter-Prüfung für %s (%s) nicht möglich, werte als Erfolg: %s", slug, normalized, exc)
         return slug, None
 
@@ -259,7 +259,7 @@ def _reject_if_placeholder(slug: str, normalized: str) -> tuple[str | None, dict
     log.info("import_url(%s) hat nur ein Platzhalter-Rezept angelegt (slug=%s), lösche und versuche die nächste Stufe", normalized, slug)
     try:
         mealie_client.delete_recipe(slug)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Aufraeumen darf den Import nicht scheitern lassen
         # Nicht fatal (DESIGN.md §5, kein stiller Abbruch gilt für den Import, nicht für
         # diese Aufräumarbeit): ein liegen gebliebener Platzhalter ist kosmetisch, kein
         # Grund, den ganzen Import scheitern zu lassen.
@@ -291,7 +291,7 @@ async def _run_import(h: str, normalized: str) -> None:
             # Diese Verzweigung ist eine Absicherung für den Wiederaufnahme-Pfad beim
             # Start, der ohne erneute HTTP-Validierung läuft.
             raise ValueError(f"nicht unterstützte URL: {normalized}")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - jeder Fehlschlag wird gemeldet, nie still verworfen
         message = _describe_source_error(exc)
         log.error("Extraktion fehlgeschlagen für %s: %s", h, message)
         store.fail(h, message)
@@ -342,7 +342,7 @@ def _rename_scraped(slug: str, source: str, mealie_data: dict | None) -> tuple[s
 
     try:
         return new_name, mealie_client.rename(slug, new_name)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Namensstufe darf den Import nie scheitern lassen
         log.warning("Umbenennen von %s auf %r fehlgeschlagen, Name bleibt: %s", slug, new_name, exc)
         return None, slug
 
@@ -386,7 +386,7 @@ def _publish(h, recipe, slug: str | None, source: str, mealie_data: dict | None 
             # hat - sonst steht der Name schon in `mealie_data` und ein zweiter GET
             # wäre dieselbe Anfrage ein zweites Mal.
             title = renamed or (mealie_data or {}).get("name") or mealie_client.get_recipe_name(slug)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - jeder Fehlschlag wird gemeldet, nie still verworfen
         message = f"Mealie hat den Import abgelehnt: {exc}"
         log.error("Mealie-Import fehlgeschlagen für %s: %s", h, message)
         store.fail(h, message)
@@ -399,7 +399,7 @@ def _publish(h, recipe, slug: str | None, source: str, mealie_data: dict | None 
 
     try:
         mealie_client.set_tags(slug, ["auto-import"])
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - fehlendes Tag ist kosmetisch, kein Abbruchgrund
         log.warning("set_tags(%s) fehlgeschlagen, Rezept bleibt ohne Tag: %s", slug, exc)
 
     link = mealie_client.recipe_link(slug)
@@ -436,7 +436,7 @@ async def _process_file(uploads: list[document.Upload]) -> None:
         else:
             recipe = extract_recipe(result.text, label)
             source = "PDF"
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - jeder Fehlschlag wird gemeldet, nie still verworfen
         message = _describe_source_error(exc)
         log.error("Datei-Import fehlgeschlagen für %s: %s", h, message)
         store.fail(h, message)
