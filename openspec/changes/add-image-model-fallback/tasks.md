@@ -65,15 +65,15 @@ appears in a file of this repository.
 
 ## 4. The Gemini fetcher
 
-- [ ] 4.1 Add `_fetch_gemini(prompt, candidate)` to `src/image.py`: `POST
+- [x] 4.1 Add `_fetch_gemini(prompt, candidate)` to `src/image.py`: `POST
   {base}/v1beta/models/{model}:generateContent`, key in `x-goog-api-key`, the existing
   prompt as a single text part, and `generationConfig` carrying
   `responseModalities: ["IMAGE"]` plus `imageConfig.aspectRatio: "1:1"`; verify a test
   asserts the exact URL, header name and body shape against a stubbed `requests.post`.
-- [ ] 4.2 Decode the answer from the first part carrying `inlineData`, ignoring text parts
+- [x] 4.2 Decode the answer from the first part carrying `inlineData`, ignoring text parts
   that precede it; verify tests for: image part only, text part then image part, text part
   only, no candidates, and base64 that does not decode.
-- [ ] 4.3 Route the existing `pollinations` and `openai` fetchers through the same
+- [x] 4.3 Route the existing `pollinations` and `openai` fetchers through the same
   per-candidate signature so all three take a candidate instead of reading
   `config.IMAGE_PROVIDER`; verify the existing Pollinations and OpenAI tests in
   `tests/test_image.py` still pass with no change to their assertions about the request.
