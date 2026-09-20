@@ -8,7 +8,7 @@ from schema import Recipe, to_jsonld
 
 
 def _valid_kwargs(**overrides):
-    kwargs = dict(name="Testrezept", recipeIngredient=["1 Ei"], recipeInstructions=["Verquirlen."])
+    kwargs = {"name": "Testrezept", "recipeIngredient": ["1 Ei"], "recipeInstructions": ["Verquirlen."]}
     kwargs.update(overrides)
     return kwargs
 

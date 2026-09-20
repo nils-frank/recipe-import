@@ -17,7 +17,7 @@ import mealie_client
 from schema import Recipe
 
 PLACEHOLDER_RECIPE = {
-    "name": "Kartoffel – Wikipedia",
+    "name": "Kartoffel – Wikipedia",  # noqa: RUF001 - live erfasster Mealie-Titel, EN DASH gehört zur Probe
     "recipeIngredient": [
         {
             "quantity": 0.0,
