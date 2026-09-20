@@ -44,6 +44,26 @@ def isolated_store(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def frische_modellkette(monkeypatch):
+    """Die Modellkette (A21) merkt sich prozessweit, welches Modell erschöpft oder
+    unbekannt ist - genau dafür ist sie da. In einer Testreihe hiesse das, dass ein
+    Test, der ein 429 nachstellt, dem nächsten die Kette leerräumt. Deshalb fängt jeder
+    Test mit der konfigurierten Kette an.
+
+    Die Modellsuche ist dabei aus, wie die Namens- und die Bildstufe: sie liest beim
+    Start die Modellliste des Anbieters, und DESIGN.md §12 verlangt eine Testreihe
+    "ohne jeden Netzzugriff". Wer sie prüfen will, schaltet sie ausdrücklich ein (siehe
+    test_model_discovery.py)."""
+    import config
+    import model_chain
+
+    monkeypatch.setattr(config, "LLM_MODEL_AUTODISCOVER", False)
+    model_chain.reset()
+    yield
+    model_chain.reset()
+
+
+@pytest.fixture(autouse=True)
 def naming_off(monkeypatch):
     """Die Namensstufe (A18) ist im Dienst standardmässig an und ruft dabei das
     Sprachmodell. Für die Testreihe gilt DESIGN.md §12 "ohne jeden Netzzugriff", deshalb
@@ -53,3 +73,27 @@ def naming_off(monkeypatch):
     import config
 
     monkeypatch.setattr(config, "NAMING_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def image_off(monkeypatch):
+    """Die Bildstufe (A19) ist im Dienst standardmässig an und ruft dabei ein
+    Bildmodell. Wie bei der Namensstufe gilt für die Testreihe DESIGN.md §12 "ohne jeden
+    Netzzugriff", deshalb ist sie überall aus - ein Test, der sie prüfen will, schaltet
+    sie ausdrücklich ein (siehe test_image.py). So bleibt sichtbar, dass alle übrigen
+    Zusicherungen unabhängig von dieser Stufe gelten."""
+    import config
+
+    monkeypatch.setattr(config, "IMAGE_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def recipe_still_in_mealie(monkeypatch):
+    """`app._notify_if_done` fragt bei einem `done`-Eintrag zuerst bei Mealie nach, ob
+    der Slug dort noch existiert. Das ist ein HTTP-Aufruf, und DESIGN.md §12 verlangt
+    eine Testreihe ohne jeden Netzzugriff - deshalb gilt hier überall "Rezept ist noch
+    da". Der Test zum gelöschten Rezept (test_idempotency.py) setzt das ausdrücklich
+    um."""
+    import mealie_client
+
+    monkeypatch.setattr(mealie_client, "recipe_exists", lambda slug: True)

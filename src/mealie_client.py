@@ -42,6 +42,32 @@ in `recipeInstructions` mit `"text": "Could not detect instructions"` - keine le
 Listen, wie man ohne diese Prüfung vermuten würde. Zum Vergleich lieferte dieselbe Probe
 für die Chefkoch-Testseite aus `test_files/test_url.txt` 17 Zutaten und 13 Schritte mit
 echtem Text. Siehe `is_placeholder`.
+
+Bildstufe (A19, openspec/changes/add-ai-recipe-image), live geprüft am 2026-09-20 gegen
+Mealie v3.22.0 (Aufgaben 1.1 und 1.2 der Änderung):
+
+- Bild setzen (Aufgabe 1.1): `PUT /api/recipes/{slug}/image` existiert, neben `post` und
+  `delete` auf demselben Pfad. `/openapi.json` nennt als Körper `multipart/form-data` nach
+  dem Schema `Body_update_recipe_image_api_recipes__slug__image_put` mit genau zwei
+  Feldern, **beide Pflicht**: `image` (`contentMediaType: application/octet-stream`) und
+  `extension` (String). Antworten: `200` bei Erfolg, `422` bei Schemafehler - kein `201`.
+  Als einziger Aufruf hier kein JSON, deshalb ohne `_HEADERS`: `requests` muss
+  Content-Type samt boundary selbst setzen.
+
+- Bild vorhanden (Aufgabe 1.2): **das Feld `image` taugt dafür nicht.** Gemessen über alle
+  40 Rezepte der Anlage: 29 haben keine Bilddatei, aber nur ein einziges (`kasespatzle`)
+  trägt `image: null`. Die anderen 28 tragen eine zufällige Kennung wie `'QziM'`, obwohl
+  unter `GET /api/media/recipes/{id}/images/original.webp` nichts liegt (404, auch für
+  `min-original.webp` und `tiny-original.webp`). Mealie vergibt die Kennung offenbar beim
+  Anlegen, nicht beim Hinterlegen eines Bildes; sie ist ein Cache-Schlüssel, keine Aussage
+  über ein vorhandenes Bild. Belastbar ist nur die Mediendatei selbst: `GET
+  /api/media/recipes/{id}/images/original.webp` antwortete für die 11 Rezepte mit Bild mit
+  `200 image/webp` (z.B. `quiche-lorraine-rezept-der-klassiker`, 85690 Bytes) und sonst
+  mit `404`.
+
+  `has_image()` unten wertet noch das Feld aus und meldet damit für ein bildloses Rezept
+  "hat ein Bild". Das ist der Befund aus Aufgabe 1.2 und macht Aufgabe 2.2 der Änderung
+  neu auf; hier steht bewusst die Messung und nicht schon die Umarbeitung.
 """
 from __future__ import annotations
 
@@ -51,6 +77,12 @@ import logging
 import requests
 
 from config import MEALIE_TOKEN, MEALIE_URL
+
+# `_image_mime` prüft JPEG/PNG/WebP anhand der Magic Bytes und ist damit genau die
+# Auskunft, die der Upload für die Dateiendung braucht. Bewusst wiederverwendet statt
+# hier ein zweites Mal definiert: welche Bildtypen der Dienst kennt, soll an einer
+# Stelle stehen. `naming.py` greift aus demselben Grund auf `llm._post` zu.
+from llm import _image_mime
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +108,16 @@ _PLACEHOLDER_INSTRUCTION_TEXT = "could not detect instructions"
 
 class MealieError(Exception):
     """Mealie hat einen Schreibvorgang abgelehnt, der laut Ablauf gelingen muss."""
+
+
+class MealieUnavailableError(MealieError):
+    """Mealie war gar nicht erreichbar - Verbindungsfehler, Namensauflösung oder
+    Zeitüberschreitung, also kein HTTP-Status.
+
+    Eigene Klasse, weil die beiden Fälle verschieden ausgehen (A20, design.md): "Mealie
+    hat nein gesagt" ist ein endgültiger Fehlschlag, "Mealie war nicht da" ist ein
+    "später nochmal" und wird geparkt. Unterklasse von `MealieError`, damit jeder
+    bestehende `except MealieError` unverändert weiter greift."""
 
 
 def _slugify(tag: str) -> str:
@@ -126,7 +168,7 @@ def create_from_jsonld(data: dict) -> str:
             timeout=REQUEST_TIMEOUT,
         )
     except requests.RequestException as exc:
-        raise MealieError(str(exc)) from exc
+        raise MealieUnavailableError(str(exc)) from exc
 
     if resp.status_code != 201:
         raise MealieError(f"{resp.status_code}: {resp.text[:300]}")
@@ -177,7 +219,7 @@ def set_tags(slug: str, tags: list[str]) -> None:
             timeout=REQUEST_TIMEOUT,
         )
     except requests.RequestException as exc:
-        raise MealieError(str(exc)) from exc
+        raise MealieUnavailableError(str(exc)) from exc
 
     if resp.status_code != 200:
         raise MealieError(f"{resp.status_code}: {resp.text[:300]}")
@@ -197,7 +239,7 @@ def get_recipe(slug: str) -> dict:
             timeout=REQUEST_TIMEOUT,
         )
     except requests.RequestException as exc:
-        raise MealieError(str(exc)) from exc
+        raise MealieUnavailableError(str(exc)) from exc
 
     if resp.status_code != 200:
         raise MealieError(f"{resp.status_code}: {resp.text[:300]}")
@@ -253,10 +295,38 @@ def delete_recipe(slug: str) -> None:
             timeout=REQUEST_TIMEOUT,
         )
     except requests.RequestException as exc:
-        raise MealieError(str(exc)) from exc
+        raise MealieUnavailableError(str(exc)) from exc
 
     if resp.status_code not in (200, 204):
         raise MealieError(f"{resp.status_code}: {resp.text[:300]}")
+
+
+def recipe_exists(slug: str) -> bool:
+    """True, solange Mealie unter diesem Slug noch ein Rezept führt.
+
+    Grundlage der Prüfung in `app._notify_if_done`: ein `done`-Eintrag im Store bleibt
+    stehen, auch wenn das Rezept danach in Mealie gelöscht wird. Ohne diese Abfrage
+    blockiert der alte Eintrag jeden weiteren Anlauf derselben Quelle und die
+    Rückmeldung trägt einen Link auf ein Rezept, das es nicht mehr gibt.
+
+    Nur eine `404` gilt als "weg". Jeder andere Fehlschlag - Netz, Timeout, 5xx -
+    liefert True: ein gerade nicht erreichbares Mealie darf keinen zweiten Import
+    derselben Quelle auslösen."""
+    try:
+        resp = requests.get(
+            f"{MEALIE_URL}/api/recipes/{slug}",
+            headers=_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        log.warning("Mealie nicht erreichbar bei der Prüfung von %s: %s", slug, exc)
+        return True
+
+    if resp.status_code == 404:
+        return False
+    if resp.status_code != 200:
+        log.warning("Unerwartete Antwort bei der Prüfung von %s: %d", slug, resp.status_code)
+    return True
 
 
 def recipe_link(slug: str) -> str:
@@ -291,7 +361,7 @@ def rename(slug: str, name: str) -> str:
             timeout=REQUEST_TIMEOUT,
         )
     except requests.RequestException as exc:
-        raise MealieError(str(exc)) from exc
+        raise MealieUnavailableError(str(exc)) from exc
 
     if resp.status_code != 200:
         raise MealieError(f"{resp.status_code}: {resp.text[:300]}")
@@ -326,3 +396,82 @@ def recipe_texts(recipe: dict) -> tuple[list[str], list[str]]:
         str(item.get("text") or "").strip() for item in (recipe.get("recipeInstructions") or [])
     ]
     return [i for i in ingredients if i], [s for s in instructions if s]
+
+
+# Endung je Bildtyp, den `_image_mime` kennt. Mealie verlangt sie getrennt vom Dateinamen
+# im Feld `extension` (siehe Moduldocstring).
+_IMAGE_EXTENSIONS = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+
+# Die Bilddatei, an der "hat ein Bild" gemessen wird. Mealie legt zu jedem Bild drei
+# Grössen ab (original, min-original, tiny-original); die Probe vom 2026-09-20 fand sie
+# stets gemeinsam vorhanden oder gemeinsam abwesend, deshalb reicht eine davon.
+_IMAGE_RENDITION = "original.webp"
+
+
+def has_image(recipe: dict) -> bool:
+    """True, wenn zu `recipe` (Antwort von `get_recipe`) in Mealie wirklich eine
+    Bilddatei liegt (A19).
+
+    **Nicht** am Feld `image` entschieden: das trägt eine Kennung wie `'QziM'` auch bei
+    einem Rezept ganz ohne Bild - gemessen am 2026-09-20 an 28 von 29 bildlosen
+    Rezepten, siehe Moduldocstring. Gefragt wird deshalb die Mediendatei selbst, die
+    einzige Auskunft, die sich dabei als belastbar erwiesen hat.
+
+    Grundlage der Entscheidung in `app._attach_image`: ein Bild, das Mealie selbst von
+    der Quellseite geholt hat, zeigt das echte Gericht und wird nie durch ein erzeugtes
+    ersetzt. Im Zweifel gilt deshalb "hat ein Bild": eine fehlende id, ein Netzfehler
+    oder ein unerwarteter Status sind kein Grund, ein vorhandenes Foto zu überschreiben.
+    Nur eine glatte `404` heisst "kein Bild"."""
+    recipe_id = recipe.get("id")
+    if not recipe_id:
+        log.warning("Rezept ohne id, Bildstand unbekannt - gilt als 'hat ein Bild'")
+        return True
+
+    url = f"{MEALIE_URL}/api/media/recipes/{recipe_id}/images/{_IMAGE_RENDITION}"
+    log.info("GET %s", url)
+    try:
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {MEALIE_TOKEN}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        log.warning("Bildstand von %s nicht abfragbar (%s) - gilt als 'hat ein Bild'", recipe_id, exc)
+        return True
+
+    if resp.status_code == 404:
+        return False
+    if resp.status_code != 200:
+        log.warning(
+            "Unerwartete Antwort %d beim Bildstand von %s - gilt als 'hat ein Bild'",
+            resp.status_code, recipe_id,
+        )
+    return True
+
+
+def set_image(slug: str, data: bytes) -> None:
+    """Hängt `data` als Rezeptbild an `slug` (A19). Wirft `MealieError` bei Fehlschlag.
+
+    Einziger Aufrufer ist die Bildstufe in `app.py`, die jeden Fehlschlag auffängt: ein
+    Rezept ohne Bild ist ein kosmetischer Mangel, kein gescheiterter Import. Form des
+    Aufrufs und der Grund für die fehlenden `_HEADERS` stehen im Moduldocstring."""
+    try:
+        mime = _image_mime(data)
+        extension = _IMAGE_EXTENSIONS[mime]
+    except Exception as exc:
+        raise MealieError(f"unbekanntes Bildformat: {exc}") from exc
+
+    log.info("PUT %s/api/recipes/%s/image (%d Bytes, %s)", MEALIE_URL, slug, len(data), extension)
+    try:
+        resp = requests.put(
+            f"{MEALIE_URL}/api/recipes/{slug}/image",
+            headers={"Authorization": f"Bearer {MEALIE_TOKEN}"},
+            files={"image": (f"image.{extension}", data, mime)},
+            data={"extension": extension},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise MealieUnavailableError(str(exc)) from exc
+
+    if resp.status_code not in (200, 201):
+        raise MealieError(f"{resp.status_code}: {resp.text[:300]}")
