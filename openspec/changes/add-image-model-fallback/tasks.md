@@ -128,14 +128,14 @@ appears in a file of this repository.
 - [x] 7.3 Update the picture-stage paragraph in `README.md` to describe the chain and the
   free floor in two sentences; verify it names no model id that task 1 did not prove.
 
-- [ ] 7.4 Update the runbook in the operations repository
+- [x] 7.4 Update the runbook in the operations repository
   (`~/Documents/github/homelab/setup-recipe-import.md`) with the new variables and the fact
   that the stage now spends credit, and commit it there, not here; verify the runbook names
   the same defaults as `.env.example`.
 
 ## 8. Gate
 
-- [ ] 8.1 Run `ruff check .` and `pytest`; verify both are clean, with no test needing
+- [x] 8.1 Run `ruff check .` and `pytest`; verify both are clean, with no test needing
   network access.
 - [ ] 8.2 Deploy to the host, import one recipe that has no picture, and verify in Mealie
   that the picture came from the head candidate, carries no watermark, and that the log
