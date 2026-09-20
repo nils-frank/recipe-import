@@ -139,8 +139,13 @@ appears in a file of this repository.
   network access.
 - [ ] 8.2 Deploy to the host, import one recipe that has no picture, and verify in Mealie
   that the picture came from the head candidate, carries no watermark, and that the log
-  names that candidate.
-- [ ] 8.3 Force the fallback once on the deployment (a chain whose head is a model id that
-  does not exist) and verify the import still produces a picture from the free provider,
-  the log names both the skip and the candidate that delivered, and the import reports
-  success.
+  names that candidate. **Blocked:** deployed and healthy, but the Gemini account answers
+  `402 "Your prepayment credits are depleted"` for every model, images and text alike, so
+  no picture can come from the head candidate until the credit is topped up. A live import
+  currently fails in the text stage before the picture stage is reached.
+- [x] 8.3 Force the fallback once on the deployment and verify the import still produces a
+  picture from the free provider, the log names both the skip and the candidate that
+  delivered, and the import reports success. **No bogus model id was needed:** the account's
+  prepay credit is depleted, so both Gemini candidates answer `402` for real. Verified on
+  the host: both are marked exhausted for 3600 s and `pollinations:sana` returns a 64 KB
+  JPEG.
