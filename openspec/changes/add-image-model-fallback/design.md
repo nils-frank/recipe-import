@@ -28,11 +28,35 @@ constraints that shape the approach:
 - Measured for Pollinations the same day: `200 image/jpeg`, 768x768, 46-73 KB, 35-46 s per
   picture, no account and no key; the `pollinations.ai` watermark stays even with a free
   token; two concurrent requests give `429`.
-- The account now holds $5 of Gemini credit. Nothing in this repository has yet been
-  measured against a credited key, which is what task 1 exists for. **No Gemini model id
-  and no price in this design is confirmed until task 1 has run against the credited key
-  on the deploy host**, where `LLM_API_KEY` lives (root, mode 600) and from where it never
-  leaves.
+- **Measured against the credited key on 2026-09-20 (task 1), run on the deploy host so
+  the key never left it.** The $5 of credit reverses the measurement above: every image
+  model now answers `200` with a real picture. The provider lists seven image models, all
+  through `generateContent`; the `veo-*` entries are video and use `predictLongRunning`.
+  One call each, with this service's own prompt and `responseModalities: ["IMAGE"]`:
+
+  | model | answer | picture | image tokens | price per picture |
+  | --- | --- | --- | --- | --- |
+  | `gemini-3-pro-image` | `200` in 15.3 s | `image/jpeg`, 1408x768, 897 KB | 1120 | $0.134 |
+  | `nano-banana-pro-preview` | `200` in 15.3 s | `image/jpeg`, 1408x768, 747 KB | 1120 | $0.134 |
+  | `gemini-3.1-flash-image` | `200` in 8.6 s | `image/jpeg`, 1408x768, 914 KB | 1120 | $0.067 |
+  | `gemini-3.1-flash-lite-image` | `200` in 3.2 s | `image/jpeg`, 1408x768, 899 KB | 1120 | $0.034 |
+  | `gemini-2.5-flash-image` | `200` in 5.7 s | `image/png`, 1024x1024, 2.19 MB | 1290 | $0.039 |
+
+  The prices are the measured image-token counts against the published paid-tier rates
+  ($120, $60 and $30 per million image tokens), not a per-picture figure read off a page:
+  1120 tokens at $120 per million is $0.1344. So the $5 buys about **37 pictures from the
+  pro model**, 74 from flash, or 148 from flash-lite.
+
+  `nano-banana-pro-preview` returned the same size, the same token count and the same
+  timing as `gemini-3-pro-image`: it is the preview id of that model, so the stable id is
+  the one worth pinning. `gemini-2.5-flash-image` is marked deprecated, is the only one
+  answering PNG, and is the only one whose answer is over 2 MB.
+
+  Every picture was a photograph of the dish with no text, no logo and no watermark. Two
+  were looked at: the pro and the flash one, both plausible food photography.
+
+  `generationConfig.imageConfig.aspectRatio: "1:1"` is accepted and returns 1024x1024 for
+  **the same 1120 tokens**, so a square picture costs the same as the default 1408x768.
 - Tests run "ohne jeden Netzzugriff" (`DESIGN.md` §12). Every clock and every HTTP call
   needs a seam, and `tests/conftest.py` keeps the stage switched off by default.
 
@@ -81,11 +105,19 @@ rather than failing the start, following the existing `IMAGE_PROVIDER` rule: the
 stage must never cost a start. An entry with no colon is read as a model on the default
 provider for backwards friendliness, with a warning.
 
-Proposed default, pending task 1:
+Default, from the measurements in Context:
 
 ```
 gemini:gemini-3-pro-image, gemini:gemini-3.1-flash-image, pollinations:sana
 ```
+
+The pro model first because it is the best picture for $0.134 and 15 seconds, and because
+the free floor underneath means a spent credit costs nothing but quality.
+`gemini-3.1-flash-image` keeps the middle slot: the only case it serves is the pro model
+being briefly unavailable while the account still has credit, which is exactly what A21
+measured for the text models, and at $0.067 it halves the price of that case. The preview
+id `nano-banana-pro-preview` is left out as a duplicate of the pro model, and the
+deprecated `gemini-2.5-flash-image` is left out for being deprecated.
 
 ### Backwards compatibility follows the `LLM_MODEL` rule
 
@@ -120,13 +152,28 @@ suffix gets that address unchanged, and can still set `IMAGE_BASE_URL` explicitl
 ### The Gemini fetcher speaks the native surface
 
 `POST {base}/v1beta/models/{model}:generateContent` with `x-goog-api-key: <key>` and a body
-carrying the existing one-sentence prompt as a single text part. The picture comes back as
-base64 in a part's `inlineData.data`, with its type in `inlineData.mimeType`. The response
-may also carry text parts, and may carry no image part at all when the model answers in
-words instead - that case is an unusable answer, not an error, and the chain moves on.
+carrying the existing one-sentence prompt as a single text part, plus
+
+```json
+{"generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "1:1"}}}
+```
+
+The picture comes back as base64 in a part's `inlineData.data`, with its type in
+`inlineData.mimeType`. The response may also carry text parts, and may carry no image part
+at all when the model answers in words instead - that case is an unusable answer, not an
+error, and the chain moves on. All of this is the measured shape, not a read of the
+documentation.
 
 Alternative considered: keep using the OpenAI-compatible surface and wait for Google to
 map `/images/generations`. Measured `404` on 2026-09-20; waiting is not a design.
+
+### The picture is asked for square
+
+`aspectRatio: "1:1"` gives 1024x1024 instead of the default 1408x768, for the same 1120
+image tokens and the same price. Mealie's tile view is what these pictures exist for, and
+the stage's other provider already returns 768x768, so a square picture is both the shape
+that fits and the shape that keeps the two providers comparable. A 1408x768 picture would
+be cropped by the tile anyway, which is paying full price for pixels that are thrown away.
 
 The existing decoding guards stay in front of the result for every provider: non-empty,
 at most `MAX_IMAGE_BYTES`, and `llm._image_mime` must recognise the bytes.
@@ -174,10 +221,13 @@ candidate's own timeout, the walk stops and the import completes without a pictu
 call still carries a per-request timeout, and the request timeout is the smaller of the
 provider's timeout and the time left.
 
-150 seconds is measurement plus headroom: Pollinations took 35-46 s per picture, the chain
-is three entries long, and `app._publish` holds the push notification until the stage
-returns. A chain that could burn three 90-second timeouts would make a successful import
-feel broken.
+150 seconds is measurement plus headroom. Measured per picture: the Gemini candidates
+answered in 3.2 to 15.9 s, Pollinations in 35-46 s. A walk that fails at both Gemini
+candidates and succeeds at Pollinations therefore costs about a minute, well inside the
+budget, and the budget only bites when candidates hang rather than answer. `app._publish`
+holds the push notification until the stage returns, so a chain that could burn three
+90-second timeouts would make a successful import feel broken. The Gemini per-request
+timeout is 60 s against a measured 16 s worst case; Pollinations keeps its 90 s.
 
 ### No spend accounting, no balance check
 
@@ -194,11 +244,10 @@ provider names into a user's Mealie library for no decision the user makes there
 
 ## Risks / Trade-offs
 
-- **Task 1 finds that the credit still does not buy images** (billing not enabled for the
-  Generative Language API, or the image models excluded) → the change collapses to
-  nothing useful: stop, record the measurement in the design, and keep the current
-  single-provider stage. Everything downstream of task 1 depends on that answer, which is
-  why it is task 1 and not task 8.
+- **The credit is finite and small.** $5 is about 37 pictures from the pro model, so a
+  busy month spends it → the chain's whole point: the free floor catches it, and the
+  cheaper middle candidate is one edit away from becoming the head if the price matters
+  more than the picture.
 - **Silent quality swing.** When the credit runs out, pictures go back to 768x768 with a
   watermark and nobody is told → the log line names the candidate, and this is a
   deliberate trade: a push notification per provider switch would be noise on every import
@@ -218,9 +267,9 @@ provider names into a user's Mealie library for no decision the user makes there
 - **A Gemini model that answers with text instead of a picture** (a safety response, or a
   chatty answer) → classified unusable, chain continues, one test covers exactly that
   answer shape.
-- **Default chain names a model this account cannot serve** → task 1 replaces every
-  proposed id with a measured one before the defaults are written, and an unknown model is
-  skipped at runtime rather than failing.
+- **Default chain names a model this account cannot serve** → every id in the default was
+  called once against the credited key and answered with a picture (Context), and an
+  unknown model is skipped at runtime rather than failing.
 
 ## Migration Plan
 
@@ -236,10 +285,11 @@ Configuration only; no data, no schema, no container change.
 
 ## Open Questions
 
-- The exact ids of the current Gemini image generation (the "Nano Banana 2" family) and
-  their per-picture price. Task 1 answers both against the credited key; the answer changes
-  the default chain string and the price line in this document, and neither the specs nor
-  the approach nor the task list.
-- Whether the middle candidate (the cheaper flash image model) earns its slot, or whether
-  the chain should be pro then free. Also task 1: if the flash picture is not usable for a
-  Mealie tile, the entry is dropped. Chain length is not a design constant.
+- Whether one cooldown fits both reasons a candidate reports itself spent. A provider busy
+  for a minute and a credit gone for the rest of the month are the same signal here, and
+  both are skipped for an hour. The cost of getting it wrong is one rejected call per hour,
+  which is free, so a second value can be added later without touching the specs.
+- How the pictures compare once a few real recipes have gone through, rather than one probe
+  each. The flash picture measured usable, which is why it keeps the middle slot, but only
+  imports of real recipes will show whether the pro model is worth twice the price here.
+  Either answer is a one-line change to the default chain.

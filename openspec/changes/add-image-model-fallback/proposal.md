@@ -22,17 +22,19 @@ the credit is gone.
 - **A chain of image candidates instead of one provider.** `IMAGE_MODEL_CHAIN` holds an
   ordered list of `provider:model` entries, best first. The first entry is what the
   service normally uses; the rest are fallbacks reached only when an earlier entry cannot
-  deliver a picture. Proposed default:
+  deliver a picture. Default:
   `gemini:gemini-3-pro-image, gemini:gemini-3.1-flash-image, pollinations:sana` - the
   paid Nano Banana Pro generation first, its cheaper flash sibling second, the free
-  provider last. The exact Gemini ids are the ones task 1 proves against the credited
-  key; no unverified name survives into the default.
+  provider last. Each id was called once against the credited key on 2026-09-20 and
+  answered with a real picture; the measurements are in `design.md`.
 - **A third provider form, `gemini`.** Gemini image models are not reachable over the
   OpenAI-compatible surface this service already uses for text: `/images/generations` maps
   to `predict` there, which none of its models serve (`404`, measured 2026-09-20). They
   answer on the native surface, `POST {base}/v1beta/models/{model}:generateContent`, with
   the picture returned as base64 `inlineData`. That is a different request and a different
-  answer shape, so it becomes a third fetcher next to `pollinations` and `openai`.
+  answer shape, so it becomes a third fetcher next to `pollinations` and `openai`. The
+  request asks for a square picture, which that surface returns at 1024x1024 for the same
+  price as its wider default - the shape Mealie's tile view wants.
 - **A rejected candidate hands the call down the chain.** A candidate that answers "out of
   quota", "billing required" or a rate-limit status is marked exhausted and skipped for a
   configurable cooldown (`IMAGE_MODEL_COOLDOWN_SECONDS`), and the same prompt goes to the

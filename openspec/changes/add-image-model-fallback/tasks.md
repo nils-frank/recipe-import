@@ -5,21 +5,22 @@
 Run on the deploy host, where `LLM_API_KEY` lives; the key never leaves it and never
 appears in a file of this repository.
 
-- [ ] 1.1 Call `GET {native base}/v1beta/models` with the deployed key and record in
+- [x] 1.1 Call `GET {native base}/v1beta/models` with the deployed key and record in
   `design.md` (Context) every id that generates images, including whether ids carry the
   `models/` prefix; verify the filtered id list is pasted into the design.
-- [ ] 1.2 Send one real generation call per candidate id from 1.1 through
+- [x] 1.2 Send one real generation call per candidate id from 1.1 through
   `:generateContent` with the existing picture prompt, and record per id: HTTP status,
   whether a part with `inlineData` came back, the MIME type, byte size, pixel size,
   wall-clock duration and whether any watermark is burned in; verify every id from 1.1 has
   a row.
-- [ ] 1.3 Record the per-picture price of the ids that worked and how many pictures the $5
+- [x] 1.3 Record the per-picture price of the ids that worked and how many pictures the $5
   buys at that price; verify the number is in `design.md` and not an estimate carried over
   from a marketing page.
-- [ ] 1.4 If no id produced a picture, stop the change here: record the answer in
+- [x] 1.4 If no id produced a picture, stop the change here: record the answer in
   `design.md` (Risks, first entry), leave the stage as it is, and report back rather than
-  building a chain whose head cannot work.
-- [ ] 1.5 Replace the proposed default chain in `proposal.md`, `design.md` and
+  building a chain whose head cannot work. **Did not fire:** all five ids answered `200`
+  with a picture, so the change continues.
+- [x] 1.5 Replace the proposed default chain in `proposal.md`, `design.md` and
   `specs/recipe-image/spec.md` with the ids 1.2 proved, best first, dropping any entry
   1.2 showed to be unusable; verify no unverified model id remains anywhere in the change.
 
@@ -66,8 +67,9 @@ appears in a file of this repository.
 
 - [ ] 4.1 Add `_fetch_gemini(prompt, candidate)` to `src/image.py`: `POST
   {base}/v1beta/models/{model}:generateContent`, key in `x-goog-api-key`, the existing
-  prompt as a single text part; verify a test asserts the exact URL, header name and body
-  shape against a stubbed `requests.post`.
+  prompt as a single text part, and `generationConfig` carrying
+  `responseModalities: ["IMAGE"]` plus `imageConfig.aspectRatio: "1:1"`; verify a test
+  asserts the exact URL, header name and body shape against a stubbed `requests.post`.
 - [ ] 4.2 Decode the answer from the first part carrying `inlineData`, ignoring text parts
   that precede it; verify tests for: image part only, text part then image part, text part
   only, no candidates, and base64 that does not decode.
@@ -122,6 +124,11 @@ appears in a file of this repository.
   paragraph to what task 1 measured; verify no stale claim about the free tier remains.
 - [ ] 7.3 Update the picture-stage paragraph in `README.md` to describe the chain and the
   free floor in two sentences; verify it names no model id that task 1 did not prove.
+
+- [ ] 7.4 Update the runbook in the operations repository
+  (`~/Documents/github/homelab/setup-recipe-import.md`) with the new variables and the fact
+  that the stage now spends credit, and commit it there, not here; verify the runbook names
+  the same defaults as `.env.example`.
 
 ## 8. Gate
 
