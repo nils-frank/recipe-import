@@ -135,7 +135,7 @@ A table in `config.py` maps each provider to its base URL and key:
 
 | provider | base URL | key |
 | --- | --- | --- |
-| `gemini` | `LLM_BASE_URL` with a trailing `/openai` removed | `LLM_API_KEY` |
+| `gemini` | `LLM_BASE_URL` with a trailing `/openai` removed, which is the native root including its `/v1beta` version segment | `LLM_API_KEY` |
 | `openai` | `LLM_BASE_URL` | `LLM_API_KEY` |
 | `pollinations` | `https://image.pollinations.ai` | empty |
 
@@ -151,7 +151,7 @@ suffix gets that address unchanged, and can still set `IMAGE_BASE_URL` explicitl
 
 ### The Gemini fetcher speaks the native surface
 
-`POST {base}/v1beta/models/{model}:generateContent` with `x-goog-api-key: <key>` and a body
+`POST {base}/models/{model}:generateContent` with `x-goog-api-key: <key>` and a body
 carrying the existing one-sentence prompt as a single text part, plus
 
 ```json

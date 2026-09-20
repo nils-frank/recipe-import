@@ -30,7 +30,7 @@ the credit is gone.
 - **A third provider form, `gemini`.** Gemini image models are not reachable over the
   OpenAI-compatible surface this service already uses for text: `/images/generations` maps
   to `predict` there, which none of its models serve (`404`, measured 2026-09-20). They
-  answer on the native surface, `POST {base}/v1beta/models/{model}:generateContent`, with
+  answer on the native surface, `POST {base}/models/{model}:generateContent`, with
   the picture returned as base64 `inlineData`. That is a different request and a different
   answer shape, so it becomes a third fetcher next to `pollinations` and `openai`. The
   request asks for a square picture, which that surface returns at 1024x1024 for the same
