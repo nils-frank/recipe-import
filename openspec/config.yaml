@@ -2,12 +2,14 @@ schema: spec-driven
 
 # Project context (optional)
 # This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Python 3.13 service (FastAPI, SQLite, requests). Modules live flat in src/ and are
+  imported flatly, so `import config`, never `from src.config import ...`.
+  Comments and docstrings in src/ and tests/ are written in German. README.md,
+  commit messages and the OpenSpec artifacts are written in English.
+  Tests run without any network access; the provider is always stubbed.
+  Lint with `ruff check .` (pinned in requirements-dev.txt, configured in pyproject.toml).
+  One change per git branch, one commit per change. See the operation guidance below.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
@@ -22,11 +24,35 @@ schema: spec-driven
 # Per-operation guidance (optional)
 # Add advisory guidance for how apply and archive work should be conducted.
 # This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - >-
+        Before the first code edit of a change, put the work on its own branch named
+        after the change, cut from an up to date main: `git fetch origin && git switch
+        -c <change-name> origin/main`. If the working tree already sits on a branch
+        named after this change, stay on it. If it sits on a branch belonging to a
+        different change, stop and ask before editing anything.
+      - >-
+        Never begin a second change while an earlier one is still uncommitted. Overlapping
+        edits to the same file cannot be separated afterwards, and a file level split then
+        produces a commit that never existed as a working state.
+      - >-
+        Commit once, after every task is checked off and the tests and `ruff check .` pass.
+        Use a single commit for the whole change unless the user asks for more. Write the
+        message in English prose: a subject line saying what the code now does, then
+        paragraphs covering the problem, the mechanism and anything deliberately left out.
+        Do not add a co-author trailer.
+      - >-
+        Commit only files belonging to this change. Report the diff scope before committing
+        and say plainly if it cannot be kept clean.
+  archive:
+    guidance:
+      - >-
+        The archive move and the synced main specs are part of the change. Commit them,
+        either by amending the change commit when it has not been pushed yet, or as a
+        follow up commit on the same branch when it has.
+      - >-
+        Leave the working tree clean and the branch pushed when the archive finishes, so
+        the change can go straight into a pull request. Rebase merge is the only merge
+        method enabled on this repository.
