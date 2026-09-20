@@ -182,25 +182,31 @@ IMAGE_ENABLED = os.environ.get("IMAGE_ENABLED", "true").strip().lower() not in (
     "off",
 )
 
-# Anbieter der Bildstufe. Zwei Formen, weil sie sich nicht ineinander übersetzen lassen:
+# Anbieter der Bildstufe. Drei Formen, weil sie sich nicht ineinander übersetzen lassen:
+#   "gemini"       - POST /v1beta/models/{Modell}:generateContent, Bild als inlineData.
 #   "pollinations" - ein GET, dessen Antwortkörper das Bild ist, ohne Schlüssel.
 #   "openai"       - POST /images/generations mit JSON hin und zurück.
 #
-# Probe vom 2026-09-20 (Aufgabe 1.3 der Änderung) gegen den eingetragenen Gemini-
-# Schlüssel: **damit ist keine Bilderzeugung möglich.** `/images/generations` bildet
-# dieser Anbieter auf `predict` ab, was keines seiner 58 Modelle führt (404), und die
-# Bildmodelle über `generateContent` antworten 429 "generate_content_free_tier_...
-# limit: 0" - gemini-2.5-flash-image, gemini-3-pro-image(-preview),
-# gemini-3.1-flash-image(-preview), gemini-3.1-flash-lite-image, nano-banana-pro-preview.
-# Ein Schlüssel aus einem frisch angelegten Projekt desselben Kontos antwortet gleich,
-# das Kontingent ist also auf Kontoebene null. Das Textmodell antwortet 200.
+# Erste Probe vom 2026-09-20 (A19) gegen den damals guthabenlosen Gemini-Schlüssel:
+# `/images/generations` bildet dieser Anbieter auf `predict` ab, was keines seiner 58
+# Modelle führt (404), und die Bildmodelle über `generateContent` antworteten 429
+# "generate_content_free_tier_... limit: 0", auch mit einem Schlüssel aus einem frisch
+# angelegten Projekt desselben Kontos. Deshalb war Pollinations die Vorgabe: 200
+# image/jpeg, 768x768, 46-73 KB, 35-46 s je Bild, ohne Konto und ohne Schlüssel - aber
+# mit Wasserzeichen.
 #
-# Deshalb ist Pollinations.ai die Vorgabe. Dieselbe Probe dort: 200 image/jpeg, 768x768,
-# 46-73 KB, 35-46 s je Bild, ohne Konto und ohne Schlüssel. Ein unbekannter Wert fällt
-# auf die Vorgabe zurück, statt den Dienst am Start scheitern zu lassen - die Bildstufe
-# darf keinen Import kosten, erst recht keinen Start.
+# Zweite Probe desselben Tages (A22, Aufgabe 1.2), nachdem $5 Guthaben auf dem Konto
+# lagen: **alle fünf Bildmodelle antworten 200 mit einem echten Bild**, ohne Wasserzeichen.
+# gemini-3-pro-image 15,3 s und $0,134 je Bild, gemini-3.1-flash-image 8,6 s und $0,067,
+# gemini-3.1-flash-lite-image 3,2 s und $0,034. Die Kette unten nimmt deshalb Gemini zuerst
+# und Pollinations als kostenlosen Boden darunter.
+#
+# Ein unbekannter Wert fällt auf die Vorgabe zurück, statt den Dienst am Start scheitern zu
+# lassen - die Bildstufe darf keinen Import kosten, erst recht keinen Start.
+_IMAGE_PROVIDERS = ("gemini", "openai", "pollinations")
+
 IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "pollinations").strip().lower() or "pollinations"
-if IMAGE_PROVIDER not in ("pollinations", "openai"):
+if IMAGE_PROVIDER not in _IMAGE_PROVIDERS:
     logging.getLogger(__name__).warning(
         "Unbekannter IMAGE_PROVIDER %r, es gilt 'pollinations'", IMAGE_PROVIDER
     )
@@ -209,22 +215,156 @@ if IMAGE_PROVIDER not in ("pollinations", "openai"):
 # Fest verdrahtet wie LLM_MODEL, kein wandernder Alias: ein Modellwechsel ist eine
 # bewusste Änderung. Ohne Token listet Pollinations genau ein Modell, `sana`; `flux` und
 # `turbo` werden zwar angenommen, aber vom selben Modell beantwortet (Probe 2026-09-20).
-_IMAGE_MODEL_DEFAULTS = {"pollinations": "sana", "openai": "imagen-4.0-generate-001"}
+_IMAGE_MODEL_DEFAULTS = {
+    "gemini": "gemini-3-pro-image",
+    "openai": "imagen-4.0-generate-001",
+    "pollinations": "sana",
+}
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL") or _IMAGE_MODEL_DEFAULTS[IMAGE_PROVIDER]
 
-# Vorgaben je Anbieter, nicht global. Bei "openai" sind es die Werte des Textmodells:
-# derselbe Anbieter kann beides, und eine bestehende .env läuft damit unverändert weiter.
-# Bei "pollinations" bleibt der Schlüssel **leer** - der Dienst braucht keinen, und den
-# Schlüssel des Textmodells an eine andere Firma zu schicken wäre ein Leck. Wer dort ein
-# Konto hat, trägt seinen Token in IMAGE_API_KEY ein: er hebt das Wasserzeichen und die
-# feste Kantenlänge 768 auf. Bewusst kein `require()` - diese Änderung darf keinen neuen
-# harten Startabbruch einführen.
-if IMAGE_PROVIDER == "pollinations":
-    IMAGE_BASE_URL = os.environ.get("IMAGE_BASE_URL") or "https://image.pollinations.ai"
-    IMAGE_API_KEY = os.environ.get("IMAGE_API_KEY", "")
-else:
-    IMAGE_BASE_URL = os.environ.get("IMAGE_BASE_URL") or LLM_BASE_URL
-    IMAGE_API_KEY = os.environ.get("IMAGE_API_KEY") or LLM_API_KEY
+
+def _gemini_native_base() -> str:
+    """Die native Fläche desselben Anbieters, aus LLM_BASE_URL abgeleitet.
+
+    Bildmodelle antworten dort und **nicht** auf der OpenAI-kompatiblen Fläche, die
+    LLM_BASE_URL benennt (gemessen: /images/generations -> 404). Abgeleitet statt zweimal
+    konfiguriert, damit die beiden Adressen nicht auseinanderlaufen können; wer einen
+    Proxy ohne `/openai` einträgt, bekommt dessen Adresse unverändert und kann sie
+    weiterhin über IMAGE_BASE_URL überschreiben.
+    """
+    return LLM_BASE_URL.rstrip("/").removesuffix("/openai")
+
+
+# Vorgaben je Anbieter, nicht global. Bei "gemini" und "openai" sind es die Werte des
+# Textmodells: derselbe Anbieter, dasselbe Konto, dasselbe Guthaben. Bei "pollinations"
+# bleibt der Schlüssel **leer** - der Dienst braucht keinen, und den Schlüssel des
+# Textmodells an eine andere Firma zu schicken wäre ein Leck. Wer dort ein Konto hat,
+# trägt seinen Token in IMAGE_API_KEY ein: er hebt die feste Kantenlänge 768 auf, das
+# Wasserzeichen bleibt. Bewusst kein `require()` - die Bildstufe darf keinen neuen harten
+# Startabbruch einführen.
+_IMAGE_ENDPOINT_DEFAULTS = {
+    "gemini": (_gemini_native_base(), LLM_API_KEY),
+    "openai": (LLM_BASE_URL, LLM_API_KEY),
+    "pollinations": ("https://image.pollinations.ai", ""),
+}
+
+IMAGE_BASE_URL = os.environ.get("IMAGE_BASE_URL") or _IMAGE_ENDPOINT_DEFAULTS[IMAGE_PROVIDER][0]
+IMAGE_API_KEY = (
+    os.environ.get("IMAGE_API_KEY") or _IMAGE_ENDPOINT_DEFAULTS[IMAGE_PROVIDER][1]
+)
+
+# Adresse und Schlüssel **je Anbieter**, weil die Kette unten mehrere Anbieter in einem
+# Import ansprechen kann. IMAGE_BASE_URL und IMAGE_API_KEY behalten ihre Bedeutung und
+# gelten weiter genau für den Anbieter, den IMAGE_PROVIDER nennt - eine einzelne
+# Überschreibung auf alle Anbieter anzuwenden wäre der Weg, auf dem der Schlüssel des
+# Textmodells bei Pollinations landet.
+IMAGE_ENDPOINTS = dict(_IMAGE_ENDPOINT_DEFAULTS)
+IMAGE_ENDPOINTS[IMAGE_PROVIDER] = (IMAGE_BASE_URL, IMAGE_API_KEY)
+
+
+# ---------------------------------------------------------------------------
+# Kette der Bildstufe (A22, openspec/changes/add-image-model-fallback). Alle Werte
+# optional: eine bestehende .env läuft unverändert weiter und gewinnt unterhalb ihres
+# Anbieters nur Rückfälle dazu.
+# ---------------------------------------------------------------------------
+
+# Geordnete Liste "Anbieter:Modell", bestes zuerst. Der erste Eintrag ist das normal
+# genutzte Bildmodell, der Rest sind Rückfälle, die nur drankommen, wenn ein früherer
+# Eintrag kein Bild liefert. Die drei Namen sind am 2026-09-20 gegen den Schlüssel mit
+# Guthaben gemessen, nicht geraten (siehe Kommentar oben und design.md).
+#
+# Das teure Modell steht vorn, weil der kostenlose Boden darunter liegt: ein
+# aufgebrauchtes Guthaben kostet damit Bildqualität statt des Bildes. Der mittlere
+# Eintrag ist für den Fall da, dass nur das Pro-Modell gerade nicht antwortet, während
+# das Konto noch Guthaben hat - genau der Fall, den A21 für die Textmodelle gemessen hat.
+_IMAGE_MODEL_CHAIN_DEFAULT = [
+    ("gemini", "gemini-3-pro-image"),
+    ("gemini", "gemini-3.1-flash-image"),
+    ("pollinations", "sana"),
+]
+
+
+def _split_image_chain(raw: str) -> list[tuple[str, str]]:
+    """Kommaliste "Anbieter:Modell" zu Paaren. Leerraum weg, Leereinträge weg, Reihenfolge
+    erhalten, doppelte Paare weg - die Kette ist eine Reihenfolge, kein Zähler.
+
+    Ein unbekannter Anbieter fällt mit einer Warnung raus, statt den Start zu kosten. Ein
+    Eintrag ohne Doppelpunkt ist ein Modellname auf dem Anbieter aus IMAGE_PROVIDER: so
+    bleibt eine von Hand geschriebene Kette lesbar, wenn sie nur einen Anbieter benutzt.
+    """
+    log = logging.getLogger(__name__)
+    chain: list[tuple[str, str]] = []
+    for part in raw.split(","):
+        eintrag = part.strip()
+        if not eintrag:
+            continue
+        if ":" in eintrag:
+            anbieter, _, modell = eintrag.partition(":")
+            anbieter, modell = anbieter.strip().lower(), modell.strip()
+        else:
+            anbieter, modell = IMAGE_PROVIDER, eintrag
+            log.warning(
+                "IMAGE_MODEL_CHAIN-Eintrag %r nennt keinen Anbieter, es gilt %r",
+                eintrag, anbieter,
+            )
+        if not modell:
+            log.warning("IMAGE_MODEL_CHAIN-Eintrag %r nennt kein Modell, er fällt weg", eintrag)
+            continue
+        if anbieter not in _IMAGE_PROVIDERS:
+            log.warning(
+                "IMAGE_MODEL_CHAIN-Eintrag %r nennt den unbekannten Anbieter %r, er fällt weg",
+                eintrag, anbieter,
+            )
+            continue
+        if (anbieter, modell) not in chain:
+            chain.append((anbieter, modell))
+    return chain
+
+
+def _resolve_image_chain() -> list[tuple[str, str]]:
+    """IMAGE_MODEL_CHAIN gewinnt, wenn gesetzt - wer die Kette ausdrücklich hinschreibt,
+    meint genau sie.
+
+    Sonst gilt die Vorgabeliste. Ein **ausdrücklich gesetztes** Paar aus IMAGE_PROVIDER und
+    IMAGE_MODEL wandert dabei an die Spitze: eine bestehende .env, die einen Anbieter
+    angepinnt hat, behält ihn als bevorzugten und gewinnt die übrigen nur als Rückfall
+    darunter. Sind beide gar nicht gesetzt, bleibt die Vorgabeliste in ihrer Reihenfolge;
+    ihre Vorgabewerte allein sind keine Ansage. Dieselbe Regel wie bei LLM_MODEL.
+    """
+    explicit = os.environ.get("IMAGE_MODEL_CHAIN", "")
+    if explicit.strip():
+        chain = _split_image_chain(explicit)
+        if chain:
+            return chain
+        # Ein Wert nur aus Kommas, Leerraum oder unbekannten Anbietern ist ein Tippfehler
+        # und keine Ansage "gar kein Bild" - dafür gibt es IMAGE_ENABLED.
+        logging.getLogger(__name__).warning(
+            "IMAGE_MODEL_CHAIN nennt keinen brauchbaren Eintrag, es gilt die Vorgabekette"
+        )
+        return list(_IMAGE_MODEL_CHAIN_DEFAULT)
+
+    chain = list(_IMAGE_MODEL_CHAIN_DEFAULT)
+    if os.environ.get("IMAGE_PROVIDER", "").strip() or os.environ.get("IMAGE_MODEL", "").strip():
+        pinned = (IMAGE_PROVIDER, IMAGE_MODEL)
+        if pinned in chain:
+            chain.remove(pinned)
+        chain.insert(0, pinned)
+    return chain
+
+
+IMAGE_MODEL_CHAIN = _resolve_image_chain()
+
+# Wie lange ein Eintrag übersprungen wird, der sein Kontingent oder sein Guthaben als
+# aufgebraucht gemeldet hat. Eine Stunde wie bei der Textkette: so kostet ein leeres
+# Guthaben einen abgewiesenen Aufruf je Stunde statt einen je Import. Der Speicher liegt
+# nur im laufenden Prozess, ein Neustart fängt wieder am Kopf der Kette an.
+IMAGE_MODEL_COOLDOWN_SECONDS = float(os.environ.get("IMAGE_MODEL_COOLDOWN_SECONDS", "3600"))
+
+# Zeitbudget für die **ganze** Bildstufe eines Imports, nicht für einen Aufruf. Gemessen
+# am 2026-09-20: Gemini antwortet in 3 bis 16 s, Pollinations in 35-46 s. 150 s lassen
+# einer Kette von drei Einträgen Luft, ohne dass die Push-Meldung (app._publish wartet auf
+# diese Stufe) an drei Zeitüberschreitungen hängen kann.
+IMAGE_DEADLINE_SECONDS = float(os.environ.get("IMAGE_DEADLINE_SECONDS", "150"))
 
 
 # ---------------------------------------------------------------------------

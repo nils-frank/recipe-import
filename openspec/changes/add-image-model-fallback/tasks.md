@@ -26,23 +26,23 @@ appears in a file of this repository.
 
 ## 2. Configuration
 
-- [ ] 2.1 Add `IMAGE_MODEL_CHAIN`, `IMAGE_MODEL_COOLDOWN_SECONDS` and
+- [x] 2.1 Add `IMAGE_MODEL_CHAIN`, `IMAGE_MODEL_COOLDOWN_SECONDS` and
   `IMAGE_DEADLINE_SECONDS` to `src/config.py` with the defaults from `design.md` and
   German comments in the style of the surrounding file; verify by asserting each default
   in `tests/test_config_image_chain.py`.
-- [ ] 2.2 Implement chain parsing: comma list of `provider:model`, whitespace stripped,
+- [x] 2.2 Implement chain parsing: comma list of `provider:model`, whitespace stripped,
   empty entries dropped, duplicates dropped, order preserved, an unknown provider dropped
   with a warning, an entry without a colon read as a model on the default provider with a
   warning; verify each of those six cases in `tests/test_config_image_chain.py`.
-- [ ] 2.3 Implement the resolution rule from `design.md`: an explicit `IMAGE_MODEL_CHAIN`
+- [x] 2.3 Implement the resolution rule from `design.md`: an explicit `IMAGE_MODEL_CHAIN`
   wins, otherwise the default chain with an explicitly set `IMAGE_PROVIDER`/`IMAGE_MODEL`
   pair moved to the front; verify with tests for unset, explicit chain, pinned pair inside
   the default chain and pinned pair outside it.
-- [ ] 2.4 Add the per-provider base URL and key table, with the `gemini` base derived from
+- [x] 2.4 Add the per-provider base URL and key table, with the `gemini` base derived from
   `LLM_BASE_URL` by removing a trailing `/openai`, and `IMAGE_BASE_URL`/`IMAGE_API_KEY`
   overriding only the provider named by `IMAGE_PROVIDER`; verify a test asserts the
   Pollinations entry carries an empty key when only `LLM_API_KEY` is set.
-- [ ] 2.5 Keep `IMAGE_ENABLED`, `IMAGE_PROVIDER`, `IMAGE_MODEL`, `IMAGE_BASE_URL` and
+- [x] 2.5 Keep `IMAGE_ENABLED`, `IMAGE_PROVIDER`, `IMAGE_MODEL`, `IMAGE_BASE_URL` and
   `IMAGE_API_KEY` defined and unchanged in meaning; verify the existing
   `tests/test_config_image.py` still passes untouched.
 
