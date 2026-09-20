@@ -165,7 +165,9 @@ def _post(
     return content
 
 
-def _parse(content: str, source_url: str, empty_message: str = "Im Text war kein Rezept zu finden.") -> Recipe:
+def _parse(
+    content: str, source_url: str, empty_message: str = "Im Text war kein Rezept zu finden."
+) -> Recipe:
     try:
         data = json.loads(content)
     except ValueError as exc:
@@ -176,7 +178,11 @@ def _parse(content: str, source_url: str, empty_message: str = "Im Text war kein
     # Der Prompt erlaubt ausdruecklich eine leere Antwort, wenn im Text kein Rezept
     # steht. Das ist eine Aussage des Modells, kein Formatfehler - ein zweiter
     # Versuch wuerde es nur zum Erfinden draengen.
-    if not str(data.get("name") or "").strip() and not data.get("recipeIngredient") and not data.get("recipeInstructions"):
+    if (
+        not str(data.get("name") or "").strip()
+        and not data.get("recipeIngredient")
+        and not data.get("recipeInstructions")
+    ):
         raise NoRecipeFoundError(empty_message)
 
     # Die Quell-URL kommt vom Aufrufer, nicht vom Modell.
@@ -193,7 +199,9 @@ def extract_recipe(text: str, source_url: str) -> Recipe:
         raise LlmError("Der Quelltext war leer.")
 
     if len(text) > MAX_TEXT_CHARS:
-        log.warning("Quelltext von %s auf %d Zeichen gekuerzt (war %d)", source_url, MAX_TEXT_CHARS, len(text))
+        log.warning(
+            "Quelltext von %s auf %d Zeichen gekuerzt (war %d)", source_url, MAX_TEXT_CHARS, len(text)
+        )
         text = text[:MAX_TEXT_CHARS]
 
     messages = [
@@ -216,7 +224,9 @@ def extract_recipe(text: str, source_url: str) -> Recipe:
     try:
         return _parse(content, source_url)
     except _Invalid as exc:
-        raise LlmError(f"Die Antwort des Sprachmodells passte auch im zweiten Versuch nicht zum Schema: {exc}") from exc
+        raise LlmError(
+            f"Die Antwort des Sprachmodells passte auch im zweiten Versuch nicht zum Schema: {exc}"
+        ) from exc
 
 
 # Magic Bytes statt des vom Client behaupteten Inhaltstyps: die data:-URI muss den
@@ -282,4 +292,6 @@ def extract_recipe_from_images(images: list[bytes], source: str) -> Recipe:
     try:
         return _parse(content, source, empty_message)
     except _Invalid as exc:
-        raise LlmError(f"Die Antwort des Sprachmodells passte auch im zweiten Versuch nicht zum Schema: {exc}") from exc
+        raise LlmError(
+            f"Die Antwort des Sprachmodells passte auch im zweiten Versuch nicht zum Schema: {exc}"
+        ) from exc

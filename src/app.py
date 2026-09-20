@@ -135,7 +135,8 @@ async def import_file(
     # hmac.compare_digest statt "==", damit die Laufzeit des Vergleichs nichts über den
     # Token verrät. Weder der erwartete noch der gelieferte Wert geht je in eine
     # Protokollzeile.
-    supplied = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else ""
+    hat_bearer = bool(authorization) and authorization.lower().startswith("bearer ")
+    supplied = authorization[7:].strip() if hat_bearer else ""
     if not supplied or not hmac.compare_digest(supplied, config.IMPORT_TOKEN):
         log.warning("POST /import/file ohne gültigen Token abgewiesen")
         raise HTTPException(status_code=401, detail="Token fehlt oder ist falsch")
@@ -250,13 +251,20 @@ def _reject_if_placeholder(slug: str, normalized: str) -> tuple[str | None, dict
     try:
         recipe_data = mealie_client.get_recipe(slug)
     except Exception as exc:  # noqa: BLE001 - Platzhalter-Pruefung darf den Import nie stoppen
-        log.warning("Platzhalter-Prüfung für %s (%s) nicht möglich, werte als Erfolg: %s", slug, normalized, exc)
+        log.warning(
+            "Platzhalter-Prüfung für %s (%s) nicht möglich, werte als Erfolg: %s", slug, normalized, exc
+        )
         return slug, None
 
     if not mealie_client.is_placeholder(recipe_data):
         return slug, recipe_data
 
-    log.info("import_url(%s) hat nur ein Platzhalter-Rezept angelegt (slug=%s), lösche und versuche die nächste Stufe", normalized, slug)
+    log.info(
+        "import_url(%s) hat nur ein Platzhalter-Rezept angelegt (slug=%s), lösche und "
+        "versuche die nächste Stufe",
+        normalized,
+        slug,
+    )
     try:
         mealie_client.delete_recipe(slug)
     except Exception as exc:  # noqa: BLE001 - Aufraeumen darf den Import nicht scheitern lassen
@@ -282,7 +290,9 @@ async def _run_import(h: str, normalized: str) -> None:
                 slug, mealie_data = _reject_if_placeholder(slug, normalized)
             if slug is None:
                 result = site.fetch(normalized)
-                recipe = result.recipe if result.recipe is not None else extract_recipe(result.text, normalized)
+                recipe = result.recipe
+                if recipe is None:
+                    recipe = extract_recipe(result.text, normalized)
         elif kind == "youtube":
             result = youtube.fetch(normalized)
             recipe = extract_recipe(result.text, normalized)

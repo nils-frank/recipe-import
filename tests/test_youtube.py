@@ -43,7 +43,9 @@ class _FakeCompletedProcess:
         self.stderr = stderr
 
 
-def _info_line(video_id: str = VIDEO_ID, title: str = TITLE, description: str = "Ein Rezept aus der Klinikküche.") -> str:
+def _info_line(
+    video_id: str = VIDEO_ID, title: str = TITLE, description: str = "Ein Rezept aus der Klinikküche."
+) -> str:
     return json.dumps({"id": video_id, "title": title, "description": description}) + "\n"
 
 
