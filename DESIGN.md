@@ -445,7 +445,9 @@ von Kandidaten `Anbieter:Modell` durch (`IMAGE_MODEL_CHAIN`, Zustand in
 `src/image_chain.py`). Drei Anbieterformen, weil sie sich nicht ineinander übersetzen
 lassen:
 
-* `gemini`: `POST {Basis}/v1beta/models/{Modell}:generateContent`, Schlüssel im Kopf
+* `gemini`: `POST {Basis}/models/{Modell}:generateContent`, wobei die Basis die Wurzel der
+  nativen Fläche samt Versionsteil ist (`LLM_BASE_URL` ohne `/openai`, also
+  `.../v1beta`). Schlüssel im Kopf
   `x-goog-api-key`, das Bild als base64 in `inlineData`. **Nicht** über
   `/images/generations` - dort bildet dieser Anbieter auf `predict` ab, was keines seiner
   Modelle führt (404, gemessen 2026-09-20). Die Anfrage verlangt `aspectRatio: "1:1"`:

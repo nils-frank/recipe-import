@@ -349,10 +349,13 @@ def gemini_provider(monkeypatch):
     """Schaltet auf die native Gemini-Fläche, mit eigener Adresse und eigenem Schlüssel."""
     monkeypatch.setattr(config, "IMAGE_PROVIDER", "gemini")
     monkeypatch.setattr(config, "IMAGE_MODEL", "gemini-3-pro-image")
+    # Genau der Wert, den `config` aus LLM_BASE_URL ableitet: die Wurzel der nativen
+    # Fläche samt Versionsteil. Ein ausgedachter Wert hätte den doppelten `/v1beta`-Pfad
+    # nicht auffallen lassen, den erst der Lauf gegen die Anlage zeigte (404).
     monkeypatch.setitem(
         config.IMAGE_ENDPOINTS,
         "gemini",
-        ("https://generativelanguage.example/v1beta-basis", "test-platzhalter-llm-key"),
+        (config.LLM_BASE_URL.removesuffix("/openai"), "test-platzhalter-llm-key"),
     )
     _kette(monkeypatch, ("gemini", "gemini-3-pro-image"))
 
@@ -375,9 +378,11 @@ def test_gemini_sends_the_measured_request_shape(monkeypatch, image_on, gemini_p
     url = post_mock.call_args.args[0]
     kwargs = post_mock.call_args.kwargs
     assert url == (
-        "https://generativelanguage.example/v1beta-basis"
-        "/v1beta/models/gemini-3-pro-image:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta"
+        "/models/gemini-3-pro-image:generateContent"
     )
+    # Der Versionsteil steht genau einmal drin.
+    assert url.count("/v1beta/") == 1
     # Der Schlüssel geht im anbietereigenen Kopf mit, nicht als Bearer-Token.
     assert kwargs["headers"]["x-goog-api-key"] == "test-platzhalter-llm-key"
     assert "Authorization" not in kwargs["headers"]

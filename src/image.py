@@ -173,9 +173,11 @@ def _fetch_gemini(prompt: str, kandidat: tuple[str, str], timeout: float) -> byt
     (beides 1120 Bildtoken). Mealies Kachel würde das breitere Bild ohnehin beschneiden.
     """
     basis, schluessel = _endpoint(kandidat)
+    # Die Basis ist bereits die Wurzel der nativen Fläche und trägt deren Versionsteil
+    # (aus LLM_BASE_URL, ohne `/openai`) - hier kommt nur noch der Modellpfad dazu.
     base = basis.rstrip("/")
     resp = requests.post(
-        f"{base}/v1beta/models/{kandidat[1]}:generateContent",
+        f"{base}/models/{kandidat[1]}:generateContent",
         headers={"x-goog-api-key": schluessel, "Content-Type": "application/json"},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
