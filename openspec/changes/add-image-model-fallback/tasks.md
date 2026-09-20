@@ -119,13 +119,13 @@ appears in a file of this repository.
 
 ## 7. Documentation
 
-- [ ] 7.1 Update `DESIGN.md` §3 for the picture stage: the chain, the three provider forms,
+- [x] 7.1 Update `DESIGN.md` §3 for the picture stage: the chain, the three provider forms,
   the new values and the money note; verify the configuration table lists every new
   variable with its default.
-- [ ] 7.2 Update `.env.example` with `IMAGE_MODEL_CHAIN`, `IMAGE_MODEL_COOLDOWN_SECONDS`
+- [x] 7.2 Update `.env.example` with `IMAGE_MODEL_CHAIN`, `IMAGE_MODEL_COOLDOWN_SECONDS`
   and `IMAGE_DEADLINE_SECONDS`, and correct the "the Gemini key cannot generate images"
   paragraph to what task 1 measured; verify no stale claim about the free tier remains.
-- [ ] 7.3 Update the picture-stage paragraph in `README.md` to describe the chain and the
+- [x] 7.3 Update the picture-stage paragraph in `README.md` to describe the chain and the
   free floor in two sentences; verify it names no model id that task 1 did not prove.
 
 - [ ] 7.4 Update the runbook in the operations repository

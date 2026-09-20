@@ -36,10 +36,13 @@ never pay for a model call.
    recipe with no image at all. Those get one generated from the recipe's own content
    and uploaded (`src/image.py`). A photo Mealie scraped from the source page is never
    replaced, and a recipe that got a generated picture carries a `ki-bild` tag so it
-   stays clear which pictures show the actual dish. Pictures come from Pollinations.ai
-   by default (free, no key, and each one carries that provider's watermark);
-   `IMAGE_PROVIDER=openai` points the stage at an OpenAI-compatible provider instead.
-   Switchable via `IMAGE_ENABLED`.
+   stays clear which pictures show the actual dish. The stage walks an ordered chain of
+   `provider:model` candidates (`IMAGE_MODEL_CHAIN`): the paid Gemini image models first,
+   Pollinations.ai underneath as the free floor. A candidate that reports its quota or
+   credit spent is skipped for an hour and the same request goes to the next one, so a
+   spent credit costs picture quality (Pollinations stamps its watermark on every picture)
+   rather than the picture. At most one call per candidate, and the whole stage is bounded
+   by `IMAGE_DEADLINE_SECONDS`. Switchable via `IMAGE_ENABLED`.
 7. **Tag it and notify** - the recipe gets an `auto-import` tag and a Home Assistant
    push notification with a link back to it (`src/ha_notify.py`).
 8. **Retry instead of giving up when an upstream says "try later"** - a model at
