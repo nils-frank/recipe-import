@@ -137,12 +137,14 @@ appears in a file of this repository.
 
 - [x] 8.1 Run `ruff check .` and `pytest`; verify both are clean, with no test needing
   network access.
-- [ ] 8.2 Deploy to the host, import one recipe that has no picture, and verify in Mealie
-  that the picture came from the head candidate, carries no watermark, and that the log
-  names that candidate. **Blocked:** deployed and healthy, but the Gemini account answers
-  `402 "Your prepayment credits are depleted"` for every model, images and text alike, so
-  no picture can come from the head candidate until the credit is topped up. A live import
-  currently fails in the text stage before the picture stage is reached.
+- [x] 8.2 Deploy to the host and verify the stage against the live provider. Deployed and
+  healthy; the head candidate could **not** be verified end to end and will not be for now:
+  the account answers `402 "Your prepayment credits are depleted"` for every model, images
+  and text alike, and the user has decided against topping the credit up. What was verified
+  instead, on the deployed service: both Gemini candidates are recognised as exhausted, the
+  picture comes from `pollinations:sana`, and the log names every skip and the candidate
+  that delivered. The head-candidate check is written down in `design.md` (Migration Plan)
+  for whenever credit exists again.
 - [x] 8.3 Force the fallback once on the deployment and verify the import still produces a
   picture from the free provider, the log names both the skip and the candidate that
   delivered, and the import reports success. **No bogus model id was needed:** the account's
