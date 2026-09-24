@@ -286,6 +286,27 @@ Configuration only; no data, no schema, no container change.
    `pollinations:sana` restores exactly today's behaviour, and `IMAGE_ENABLED=false`
    removes the stage.
 
+**State on 2026-09-24: the credit is gone and is not being topped up.** The account answers
+`402 "Your prepayment credits are depleted"` for every model. The deployed service
+therefore runs the chain as designed and lands on Pollinations every time, which is the
+behaviour this change exists for. Two deliberate decisions follow:
+
+- The default chain keeps Gemini at the head rather than being pinned to
+  `pollinations:sana` on the host. A `402` is refused instantly and costs nothing, the
+  cooldown holds it to two rejected calls per hour per process, and leaving it in place
+  means the paid models come back by themselves the moment credit exists - no `.env` edit,
+  no deploy, nobody having to remember.
+- The head-candidate verification is deferred, not skipped. When there is credit again:
+  import one recipe that has no picture, confirm the log reads
+  `Bild ... von gemini:gemini-3-pro-image erzeugt`, and look at the picture in Mealie for
+  the absence of a watermark.
+
+Out of this change's scope but found by it: with the credit gone, the **text** stage also
+answers `402`, and `llm._post` treats that as a hard failure rather than a reason to move
+down its own chain. Every import therefore fails outright instead of being parked by the
+retry queue. That belongs to the `llm-model-fallback` capability and needs its own
+change.
+
 ## Open Questions
 
 - Whether one cooldown fits both reasons a candidate reports itself spent. A provider busy
