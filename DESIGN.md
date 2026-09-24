@@ -149,6 +149,17 @@ ganze Kette durch ist, kommt dieselbe `LlmOverloadedError` heraus wie vorher - d
 Wortlaut aus §7 und das Parken nach §5 bleiben unverändert (`src/model_chain.py`,
 `llm._post`).
 
+Seit A23 zählt ein aufgebrauchtes **Guthaben** genauso (`402`, oder ein `403`, dessen
+Körper Guthaben, Abrechnung oder Kontingent nennt): Sperrfrist wie bei `429`, derselbe
+Aufruf an das nächste Modell - aber **ohne** den zweiten Versuch am selben Modell, denn
+ein leeres Guthaben füllt sich nicht in zwei Sekunden. Der Anlass ist gemessen: am
+2026-09-24 antwortete mit leerem Vorauszahlungsguthaben *jedes* Modell dieses Anbieters
+`402 "Your prepayment credits are depleted"`, Text- wie Bildmodelle, und die kostenlose
+Stufe griff dabei nicht. Vorher fiel dieser Status in "echter Fehler dieses Aufrufs": der
+Import wurde verworfen statt geparkt, mit der Meldung, die Quelle habe kein Rezept
+enthalten. Die Marker dafür stehen einmal in `llm.py` und werden von der Bildstufe
+mitbenutzt.
+
 Die zweite Hälfte der alten Regel wird ebenso umgekehrt: mit
 `LLM_MODEL_AUTODISCOVER=true` liest der Dienst beim Start und danach täglich
 `GET {LLM_BASE_URL}/models`, behält die Namen, die zu `LLM_MODEL_PATTERN` passen, und
@@ -750,7 +761,7 @@ Rückfall für den Fall, dass das Parken selbst nicht möglich war.
 
 | Fall | Titel | Nachricht |
 |---|---|---|
-| **Jedes** Modell der Kette ist erschöpft oder ausgelastet (A21: HTTP 429/502/503/504 auf jedem Namen, oder HTTP 500 auf dem gerade genutzten - jeweils auch nach dem Wiederholungsversuch) | `Import später` | `Das Sprachmodell ist gerade ausgelastet. Ich versuche es automatisch später noch einmal.` |
+| **Jedes** Modell der Kette ist erschöpft oder ausgelastet (A21: HTTP 429/502/503/504 auf jedem Namen, oder HTTP 500 auf dem gerade genutzten - jeweils auch nach dem Wiederholungsversuch; A23: HTTP 402 oder ein 403 mit Guthabengrund, ohne Wiederholungsversuch) | `Import später` | `Das Sprachmodell ist gerade ausgelastet. Ich versuche es automatisch später noch einmal.` |
 | YouTube drosselt (HTTP 429) | `Import später` | `YouTube drosselt gerade die Untertitel. Ich versuche es automatisch später noch einmal.` |
 | Mealie nicht erreichbar (Verbindungsfehler, kein HTTP-Status) | `Import später` | `Mealie ist gerade nicht erreichbar. Ich versuche es automatisch später noch einmal.` |
 | Wiederholungen aufgebraucht oder Altersgrenze erreicht | `Import fehlgeschlagen` | `Auch nach mehreren Versuchen hat es nicht geklappt. Bitte noch einmal teilen.` |

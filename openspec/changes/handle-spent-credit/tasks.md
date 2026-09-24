@@ -33,17 +33,18 @@
 
 ## 4. Documentation
 
-- [ ] 4.1 Update the status table for the text stage in `DESIGN.md` (§3/§7) with the
+- [x] 4.1 Update the status table for the text stage in `DESIGN.md` (§3/§7) with the
   spent-credit row and what it now causes; verify the table names every status the code
   classifies.
-- [ ] 4.2 Correct the runbook in the operations repository
-  (`~/Documents/github/homelab/setup-recipe-import.md`), which currently reads a `402` as
-  the service being down, and commit it there; verify the runbook says the imports are
-  parked and resume by themselves.
+- [x] 4.2 Document the case in the runbook in the operations repository
+  (`~/Documents/github/homelab/setup-recipe-import.md`) and commit it there; verify the
+  runbook says the imports are parked and resume by themselves. **Corrected premise:** the
+  runbook did not read a `402` as the service being down, it said nothing about the case at
+  all, so this is a new section rather than a correction.
 
 ## 5. Gate
 
-- [ ] 5.1 Run `ruff check .` and `pytest`; verify both are clean and no test needs network
+- [x] 5.1 Run `ruff check .` and `pytest`; verify both are clean and no test needs network
   access.
 - [ ] 5.2 Deploy to the host and verify against the live provider that a normal import
   still completes on the free tier; verify the log shows the text chain answering and the
