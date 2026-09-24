@@ -82,6 +82,33 @@ _UNKNOWN_MODEL_MARKERS = (
 )
 
 
+# Woran ein Anbieter sagt, dass Kontingent, Guthaben oder Abrechnung aufgebraucht ist.
+# 402 sagt es allein; 403 kann ebenso gut ein zurueckgezogener Schluessel sein und zaehlt
+# deshalb nur mit einem dieser Woerter im Koerper. Gemessen am 2026-09-24: mit
+# aufgebrauchtem Vorauszahlungsguthaben antwortet **jedes** Modell dieses Anbieters
+# 402 "Your prepayment credits are depleted" mit status RESOURCE_EXHAUSTED.
+#
+# Einmal definiert, weil die Bildstufe (A22) dieselbe Frage an ihre Anbieter stellt und
+# sie gleich beantworten muss - wie bei _UNKNOWN_MODEL_MARKERS.
+_SPENT_STATUS = {402}
+_SPENT_AMBIGUOUS_STATUS = {403}
+_SPENT_MARKERS = ("quota", "credit", "billing", "resource_exhausted", "exceeded")
+
+
+def _means_spent(status: int, body: str) -> bool:
+    """Heisst diese Antwort "Kontingent oder Guthaben ist aufgebraucht"?
+
+    Kein zweiter Versuch am selben Modell folgt daraus: ein leeres Guthaben fuellt sich
+    nicht in zwei Sekunden, anders als ein Burst-Limit (429, siehe _RETRYABLE_STATUS).
+    """
+    if status in _SPENT_STATUS:
+        return True
+    if status not in _SPENT_AMBIGUOUS_STATUS:
+        return False
+    text = body.lower()
+    return any(marker in text for marker in _SPENT_MARKERS)
+
+
 def _means_unknown_model(status: int, body: str) -> bool:
     """Heisst diese Antwort "den Modellnamen gibt es hier nicht"?
 
@@ -246,6 +273,19 @@ def _post(
                 raise LlmError(detail)
 
             nur_unbekannt = False
+
+            if _means_spent(status, koerper):
+                # Kontingent oder Guthaben dieses Modells ist leer. Sofort weiter zum
+                # naechsten - der zweite Versuch am selben Modell waere nur eine zweite
+                # Ablehnung. Der Text zaehlt als "voruebergehend", damit eine erschoepfte
+                # Kette als LlmOverloadedError endet und der Import geparkt wird (A20)
+                # statt verworfen zu werden.
+                letzter_status = status
+                letzter_transienter_text = detail
+                if pinned:
+                    raise LlmOverloadedError(detail)
+                model_chain.mark_exhausted(kandidat)
+                break
 
             if status in _RETRYABLE_STATUS:
                 letzter_status = status

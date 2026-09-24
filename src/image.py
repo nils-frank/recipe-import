@@ -54,7 +54,7 @@ import config
 import image_chain
 import naming
 import prompts
-from llm import _UNKNOWN_MODEL_MARKERS, _image_mime
+from llm import _UNKNOWN_MODEL_MARKERS, _image_mime, _means_spent
 
 # Einzige Zeitquelle der Stufe, damit die Testreihe das Zeitbudget ohne Schlafen prüfen
 # kann (DESIGN.md §12). `monotonic` wie in `image_chain`.
@@ -283,11 +283,11 @@ def _decode(payload: dict) -> bytes:
     raise ValueError("Der Eintrag in 'data' trug weder 'b64_json' noch 'url'")
 
 
-# Stufen, mit denen ein Anbieter sagt "dein Kontingent, dein Guthaben oder deine Rate ist
-# aufgebraucht". 429 ist der gemessene Fall bei beiden Anbietern; 402 und 403 nennen den
-# Grund nur im Text, deshalb dort die Marker.
+# 429 ist der gemessene Fall bei beiden Anbietern: Pollinations meint damit "noch eine
+# Anfrage von dir laeuft", Gemini das leere Kontingent der kostenlosen Stufe. Alles
+# Weitere - 402 und ein 403, das den Grund nennt - beantwortet `llm._means_spent`, damit
+# beide Stufen dieselbe Antwort gleich lesen.
 _EXHAUSTING_STATUS = {429}
-_EXHAUSTING_MARKERS = ("quota", "credit", "billing", "resource_exhausted", "exceeded")
 
 
 def _classify(exc: ProviderError) -> str:
@@ -300,9 +300,7 @@ def _classify(exc: ProviderError) -> str:
     Stufen gleich erkannt werden.
     """
     text = exc.body.lower()
-    if exc.status in _EXHAUSTING_STATUS:
-        return "erschöpft"
-    if exc.status in (402, 403) and any(marker in text for marker in _EXHAUSTING_MARKERS):
+    if exc.status in _EXHAUSTING_STATUS or _means_spent(exc.status, exc.body):
         return "erschöpft"
     if exc.status == 404 or (exc.status == 400 and any(m in text for m in _UNKNOWN_MODEL_MARKERS)):
         return "unbekannt"

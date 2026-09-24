@@ -451,3 +451,106 @@ def test_angepinntes_modell_sperrt_nichts_in_der_kette(monkeypatch, kette):
 
     assert model_chain.candidates() == kette
     assert provider.calls == ["gemini-9.9-flash", "gemini-9.9-flash"]
+
+
+# --------------------------------------------------------------------------
+# A23 - aufgebrauchtes Guthaben (openspec/changes/handle-spent-credit)
+# --------------------------------------------------------------------------
+
+# Der gemessene Wortlaut vom 2026-09-24, als das Vorauszahlungsguthaben leer war: jedes
+# Modell dieses Anbieters antwortete so, Text- wie Bildmodelle.
+SPENT_BODY = {
+    "error": {
+        "code": 402,
+        "message": (
+            "Your prepayment credits are depleted. Please go to AI Studio at "
+            "https://ai.studio/projects to manage your project and billing."
+        ),
+        "status": "RESOURCE_EXHAUSTED",
+    }
+}
+FORBIDDEN_BODY = {
+    "error": {"code": 403, "message": "The caller does not have permission", "status": "PERMISSION_DENIED"}
+}
+
+
+@pytest.mark.parametrize(
+    "status, body, erwartet",
+    [
+        (402, SPENT_BODY, True),
+        (403, {"error": {"message": "billing is not enabled for this project"}}, True),
+        (403, {"error": {"message": "You exceeded your current quota"}}, True),
+        (403, FORBIDDEN_BODY, False),
+        (400, {"error": {"message": "Invalid JSON payload"}}, False),
+        (429, QUOTA_BODY, False),
+    ],
+    ids=["402", "403-billing", "403-quota", "403-verboten", "400", "429"],
+)
+def test_erkennung_eines_aufgebrauchten_guthabens(status, body, erwartet):
+    """Aufgabe 1.1. 429 ist bewusst **nicht** dabei: den Fall behandelt die bestehende
+    Leiter mit ihrem zweiten Versuch, nicht dieser Zweig."""
+    assert llm._means_spent(status, json.dumps(body)) is erwartet
+
+
+def test_402_wechselt_sofort_ohne_zweiten_versuch(monkeypatch, kette):
+    """Aufgabe 2.1: ein leeres Guthaben füllt sich nicht in zwei Sekunden."""
+    provider = FakeProvider(
+        {kette[0]: [FakeResponse(402, SPENT_BODY)], kette[1]: [FakeResponse(200, VALID_ANSWER)]}
+    )
+    monkeypatch.setattr(llm.requests, "post", provider)
+
+    assert json.loads(_post())["name"] == "Kartoffelsuppe mit Majoran"
+    # Genau ein Aufruf je Modell - kein zweiter Anlauf auf dem ersten.
+    assert provider.calls == [kette[0], kette[1]]
+
+
+def test_402_sperrt_das_modell_fuer_die_naechste_anfrage(monkeypatch, kette):
+    provider = FakeProvider(
+        {kette[0]: [FakeResponse(402, SPENT_BODY)], kette[1]: [FakeResponse(200, VALID_ANSWER)]}
+    )
+    monkeypatch.setattr(llm.requests, "post", provider)
+    _post()
+
+    assert kette[0] not in model_chain.candidates()
+
+
+def test_ganzes_konto_ohne_guthaben_ergibt_overloaded(monkeypatch, kette):
+    """Aufgabe 2.2: die erschöpfte Kette endet in der Klasse, die der Ablauf als
+    vorübergehend liest - daran hängt, dass der Import geparkt statt verworfen wird."""
+    provider = FakeProvider({}, default=FakeResponse(402, SPENT_BODY))
+    monkeypatch.setattr(llm.requests, "post", provider)
+
+    with pytest.raises(llm.LlmOverloadedError) as fehler:
+        _post()
+
+    for modell in kette:
+        assert modell in str(fehler.value)
+    # Je Modell genau ein abgewiesener Aufruf.
+    assert provider.calls == kette
+
+
+def test_angepinntes_modell_wechselt_nicht(monkeypatch, kette):
+    """Aufgabe 2.3: die Probe der Modellsuche fragt genau ein Modell und darf die Kette
+    nicht mitnehmen."""
+    provider = FakeProvider({}, default=FakeResponse(402, SPENT_BODY))
+    monkeypatch.setattr(llm.requests, "post", provider)
+
+    with pytest.raises(llm.LlmOverloadedError):
+        _post(model=kette[1])
+
+    assert provider.calls == [kette[1]]
+    assert model_chain.candidates() == kette
+
+
+def test_403_ohne_guthabengrund_scheitert_sofort(monkeypatch, kette):
+    """Aufgabe 2.4: ein entzogener Schlüssel ist auf dem nächsten Modell genauso
+    entzogen - vier Aufrufe wären vier sichere Fehlschläge."""
+    provider = FakeProvider({}, default=FakeResponse(403, FORBIDDEN_BODY))
+    monkeypatch.setattr(llm.requests, "post", provider)
+
+    with pytest.raises(llm.LlmError) as fehler:
+        _post()
+
+    assert not isinstance(fehler.value, llm.LlmOverloadedError)
+    assert provider.calls == [kette[0]]
+    assert model_chain.candidates() == kette

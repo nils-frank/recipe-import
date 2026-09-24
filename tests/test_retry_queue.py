@@ -531,3 +531,105 @@ def test_startup_sweeps_orphan_payload_directories(monkeypatch, isolated_store, 
 
     assert (payload_dir / wartend).is_dir()
     assert not (payload_dir / "verwaist").exists()
+
+
+# --- A23: aufgebrauchtes Guthaben (openspec/changes/handle-spent-credit) ----------
+#
+# Anders als die Tests oben wird `extract_recipe` hier **nicht** ersetzt: der Weg läuft
+# durch das echte `llm._post`, damit die Zusicherung "ein leeres Guthaben parkt den
+# Import" an der wirklichen Einteilung hängt und nicht an einer gestellten Ausnahme.
+
+SPENT_ANSWER = {
+    "error": {
+        "code": 402,
+        "message": "Your prepayment credits are depleted.",
+        "status": "RESOURCE_EXHAUSTED",
+    }
+}
+
+
+class _ProviderAntwort:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self._body = body
+        self.text = json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+def _echter_llm_weg(monkeypatch, antworten):
+    """Die Seite geht an das echte Sprachmodell; `antworten` ist eine Liste, aus der
+    jeder Aufruf die nächste Antwort bekommt (die letzte gilt weiter)."""
+    import llm
+
+    monkeypatch.setattr(app_module.mealie_client, "import_url", lambda url: None)
+    monkeypatch.setattr(
+        app_module.site,
+        "fetch",
+        lambda url: SourceResult(recipe=None, text="Pfannkuchen: Mehl, Milch, Ei", title=None, stage="text"),
+    )
+    monkeypatch.setattr(app_module, "extract_recipe", llm.extract_recipe)
+    monkeypatch.setattr(llm.time, "sleep", lambda seconds: None)
+
+    folge = list(antworten)
+    aufrufe: list[str] = []
+
+    def post(*args, **kwargs):
+        aufrufe.append(kwargs["json"]["model"])
+        return folge.pop(0) if len(folge) > 1 else folge[0]
+
+    monkeypatch.setattr(llm.requests, "post", post)
+    return aufrufe
+
+
+def test_leeres_guthaben_parkt_den_import_statt_ihn_zu_verwerfen(
+    monkeypatch, isolated_store, notes, payload_dir
+):
+    """Aufgabe 3.1. Der Fall vom 2026-09-24: jedes Modell antwortet 402, und der Import
+    darf davon nicht verloren gehen."""
+    aufrufe = _echter_llm_weg(monkeypatch, [_ProviderAntwort(402, SPENT_ANSWER)])
+
+    asyncio.run(app_module._process_import(URL))
+
+    row = isolated_store.find(url_hash(URL))
+    assert row["status"] == "queued"
+    assert row["due_at"] > datetime.now(UTC).isoformat()
+    # Die Meldung sagt "später nochmal", nicht "kein Rezept gefunden".
+    assert notes == [("Import später", app_module._TRANSIENT_MESSAGES["LlmOverloadedError"], None)]
+    # Je Modell genau ein abgewiesener Aufruf, kein zweiter Anlauf.
+    assert aufrufe == list(config.LLM_MODEL_CHAIN)
+
+
+def test_geparkter_import_laeuft_durch_sobald_das_modell_wieder_antwortet(
+    monkeypatch, isolated_store, notes, payload_dir
+):
+    """Aufgabe 3.2: niemand muss die Quelle erneut teilen."""
+    antwort = {
+        "choices": [{"message": {"content": json.dumps({
+            "name": "Pfannkuchen",
+            "recipeIngredient": ["Mehl", "Milch", "Ei"],
+            "recipeInstructions": ["Verrühren", "Backen"],
+            "recipeYield": None,
+            "totalTime": None,
+            "description": None,
+            "recipeCategory": [],
+            "url": None,
+        })}}]
+    }
+    _echter_llm_weg(monkeypatch, [_ProviderAntwort(402, SPENT_ANSWER)])
+    asyncio.run(app_module._process_import(URL))
+    assert isolated_store.find(url_hash(URL))["status"] == "queued"
+
+    # Guthaben wieder da, Sperrfristen der Kette weg wie nach einem Neustart.
+    import model_chain
+
+    model_chain.reset()
+    _echter_llm_weg(monkeypatch, [_ProviderAntwort(200, antwort)])
+    _mealie_creates(monkeypatch)
+
+    asyncio.run(app_module._run_due_once(datetime.now(UTC) + timedelta(hours=2)))
+
+    row = isolated_store.find(url_hash(URL))
+    assert row["status"] == "done"
+    assert row["slug"] == "pfannkuchen"
