@@ -46,6 +46,11 @@
 
 - [x] 5.1 Run `ruff check .` and `pytest`; verify both are clean and no test needs network
   access.
-- [ ] 5.2 Deploy to the host and verify against the live provider that a normal import
+- [x] 5.2 Deploy to the host and verify against the live provider that a normal import
   still completes on the free tier; verify the log shows the text chain answering and the
-  picture coming from the free image provider.
+  picture coming from the free image provider. Verified: `gemini-3.8-flash` and
+  `gemini-3.7-flash` each answered `503` twice, the chain moved on and a later model
+  extracted the recipe, both Gemini image candidates answered `429` and
+  `pollinations:sana` delivered the picture. The spent-credit branch itself could not be
+  triggered live - the account is back on the free tier, which answers `429`, not `402` -
+  so it rests on the recorded measurement of 2026-09-24 and the tests.
