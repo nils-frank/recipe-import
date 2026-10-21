@@ -47,11 +47,11 @@
 
 ## 4. Documentation
 
-- [ ] 4.1 Update the `youtube.py` contract in `DESIGN.md` §6: captions from the transcript
+- [x] 4.1 Update the `youtube.py` contract in `DESIGN.md` §6: captions from the transcript
   endpoint, `yt-dlp` for title and description, one call per video, no subtitle files, and
   the reason the old one-language-per-call rule is gone; verify the section no longer
   describes `--write-auto-sub` or `<id>.<lang>.vtt`
-- [ ] 4.2 Record in `DESIGN.md` §7 that the throttle wording now also covers a
+- [x] 4.2 Record in `DESIGN.md` §7 that the throttle wording now also covers a
   bot-verification refusal, leaving the message text itself unchanged
 
 ## 5. Verification
