@@ -59,12 +59,15 @@ recipe-scrapers
 extruct
 trafilatura
 yt-dlp
+youtube-transcript-api
 pypdf
 python-multipart
 ```
 
 `pypdf` liest den Text aus PDF-Dateien (reines Python, kein Compiler),
 `python-multipart` ist die Voraussetzung dafür, dass FastAPI Datei-Uploads annimmt.
+`youtube-transcript-api` spricht den Transkript-Endpunkt von YouTube an, von dem die
+Untertitel kommen (§6).
 
 `pytest` gehört in eine separate `requirements-dev.txt` und nicht ins Image.
 
@@ -72,10 +75,10 @@ python-multipart
 Python auf dem Host, kein zweiter Worker, kein Sidecar, kein Host-Cron, keine auf dem
 Host installierte Fremdsoftware. Zustand gibt es nur unter `/data` (Bind-Mount) und
 `/tmp` (tmpfs). Braucht ein Schritt ein Systemwerkzeug, kommt es ins Image oder der
-Schritt entfällt. Deshalb ruft `sources/youtube.py` kein `--convert-subs srt` mehr auf:
-diese Umwandlung braucht `ffmpeg`, das im Basis-Image fehlt und für reine Textumwandlung
-rund 400 MB kosten würde. Der Untertitelparser liest WebVTT (das Format, das YouTube
-liefert) und SRT.
+Schritt entfällt. `ffmpeg` fehlt im Basis-Image deshalb bis heute - es würde für eine
+reine Textumwandlung rund 400 MB kosten -, und seit die Untertitel als Text vom
+Transkript-Endpunkt kommen (§6), gibt es gar keine Untertiteldatei mehr, die umzuwandeln
+wäre.
 
 ---
 
@@ -334,29 +337,42 @@ Diese Module rufen **niemals** Mealie oder das LLM auf. Sie lesen nur.
 
 Zeitlimit 30 Sekunden je HTTP-Aufruf, ein realistischer Browser-`User-Agent`.
 
-**`youtube.py`:**
+**`youtube.py`:** zwei Quellen, absichtlich getrennt.
 
-```
-yt-dlp --skip-download --write-auto-sub --write-sub --sub-lang de --print-json
-```
+1. **Untertitel** vom Transkript-Endpunkt, angesprochen über `youtube-transcript-api`:
+   ein Aufruf je Video, Sprachpräferenz `de` vor `en`, geschriebene Untertitel vor
+   automatisch erzeugten. Die Schnipsel werden zu Fliesstext verbunden; Dubletten
+   unmittelbar hintereinander fallen weg, denn automatisch erzeugte Untertitel
+   wiederholen dieselbe Zeile über rollende Einblendungen.
+2. **Titel und Videobeschreibung** von `yt-dlp --skip-download --print-json
+   --no-warnings`. Der Aufruf schreibt nichts, braucht also kein Arbeitsverzeichnis.
 
-Kein `--convert-subs`: das ruft `ffmpeg` auf, siehe §2. Gelesen wird die Datei so, wie
-yt-dlp sie ablegt (`<id>.<lang>.vtt`, ersatzweise `.srt`), am 2026-08-23 live bestätigt.
+Geändert am 2026-10-22 (openspec/changes/fix-youtube-transcript-fetch). Vorher holte
+`yt-dlp --write-auto-sub` auch die Untertitel, eine Sprache je Aufruf. Dieser Weg ist
+verschlossen: yt-dlp löst Untertitel zu einer gezeichneten `api/timedtext`-Adresse auf,
+und YouTube beantwortet die ohne Herkunftsnachweis (PO-Token) mit `HTTP Error 429` -
+live gemessen bei jedem Untertitelformat, bei erhöhten Wiederholungen und bei fünf
+Player-Clients. Mit dem Wegfall der Untertitelschalter entfallen auch der zweite Aufruf
+für Englisch, der Befund A9 (ein `HTTP 429` der zweiten Sprache verwarf die schon
+geladene Datei der ersten) und der WebVTT/SRT-Parser.
 
-**Eine Sprache je Aufruf** (geändert am 2026-08-23 nach dem Befund aus A9): Deutsch
-zuerst, und nur wenn dabei keine Datei entsteht, ein zweiter Aufruf mit `--sub-lang en`.
-`--sub-lang de,en` in einem Aufruf ist verboten - `yt-dlp` bricht dort beim ersten
-`HTTP Error 429` einer Sprache die ganze Extraktion ab und verwirft die bereits
-geladene Datei der anderen. Vor jedem Fehlerwurf wird geprüft, ob im Arbeitsverzeichnis
-schon eine brauchbare Datei liegt. Eine Drosselung wird als Drosselung gemeldet, nicht
-als "kein Rezept gefunden" (§7).
+Beide Quellen scheitern unabhängig: scheitert `yt-dlp`, wird das gemeldet und der Import
+läuft mit dem Transkript allein weiter - es ist der Rohtext, auf den es ankommt.
+Untertitel plus Titel plus Videobeschreibung ergeben ihn, `stage="transcript"`, `recipe`
+ist immer `None`.
 
-Untertitel plus Titel plus Videobeschreibung ergeben den Rohtext, `stage="transcript"`.
-`recipe` ist immer `None`.
+**Einordnung eines Fehlschlags** (umgekehrt seit dem Befund vom 2026-10-20, als eine
+Botprüfung als "keine Untertitel" gemeldet wurde): endgültig ist nur, was YouTube über
+das Video selbst sagt - keine Untertitel in `de`/`en`, Untertitel abgeschaltet, Video
+nicht verfügbar, nicht abspielbar, altersbeschränkt, ID ungültig. Das wirft
+`NoTranscriptError`. Jede andere Abweisung - Drosselung, Botprüfung, verlangter
+Herkunftsnachweis, veränderte Antwortform, Netzfehler - wirft `ThrottledError` und wird
+geparkt (§7, A20). Die Unterscheidung hängt bewusst nicht am Wortlaut einer einzelnen
+Fehlermeldung.
 
-Alles Temporäre landet unter `/tmp`, das im Container ein tmpfs ist. **Niemals** das
-Video oder die Tonspur laden. Fehlen Untertitel, wird `NoTranscriptError` geworfen, kein
-Ausweichen auf einen Download.
+Zeitlimits: 300 Sekunden für den `yt-dlp`-Prozess, 30 Sekunden je HTTP-Aufruf des
+Transkript-Endpunkts (`requests` hat ohne Angabe gar keines). **Niemals** das Video oder
+die Tonspur laden, und keinen Whisper-Rückfall.
 
 ### `src/sources/document.py` (A12)
 
@@ -762,7 +778,7 @@ Rückfall für den Fall, dass das Parken selbst nicht möglich war.
 | Fall | Titel | Nachricht |
 |---|---|---|
 | **Jedes** Modell der Kette ist erschöpft oder ausgelastet (A21: HTTP 429/502/503/504 auf jedem Namen, oder HTTP 500 auf dem gerade genutzten - jeweils auch nach dem Wiederholungsversuch; A23: HTTP 402 oder ein 403 mit Guthabengrund, ohne Wiederholungsversuch) | `Import später` | `Das Sprachmodell ist gerade ausgelastet. Ich versuche es automatisch später noch einmal.` |
-| YouTube drosselt (HTTP 429) | `Import später` | `YouTube drosselt gerade die Untertitel. Ich versuche es automatisch später noch einmal.` |
+| YouTube gibt die Untertitel nicht heraus (Drosselung, Botprüfung, verlangter Herkunftsnachweis, veränderte Antwortform) | `Import später` | `YouTube drosselt gerade die Untertitel. Ich versuche es automatisch später noch einmal.` |
 | Mealie nicht erreichbar (Verbindungsfehler, kein HTTP-Status) | `Import später` | `Mealie ist gerade nicht erreichbar. Ich versuche es automatisch später noch einmal.` |
 | Wiederholungen aufgebraucht oder Altersgrenze erreicht | `Import fehlgeschlagen` | `Auch nach mehreren Versuchen hat es nicht geklappt. Bitte noch einmal teilen.` |
 | Kein Platz mehr für aufbewahrte Uploads (`QUEUE_PAYLOAD_MAX_MB`) | `Import fehlgeschlagen` | `Für einen späteren Versuch ist kein Speicher mehr frei. Bitte die Datei später noch einmal teilen.` |
@@ -859,7 +875,7 @@ Vierter Stack in der Struktur aus `umzug` T1, keine abweichende Konvention:
 | – | `/var/lib/homelab/recipe-import/` als Bind-Mount auf `/data` |
 
 - Port `30082`, nur auf dem LAN veröffentlicht.
-- `tmpfs` auf `/tmp`, Grösse 256 MB. Schützt die SD-Karte vor yt-dlp-Schreibzugriffen.
+- `tmpfs` auf `/tmp`, Grösse 256 MB. Hält temporäre Dateien von der SD-Karte fern.
 - `restart: unless-stopped`, Healthcheck gegen `/healthz`.
 - Speicherobergrenze `mem_limit: 512m`. Der Host hat rund 2 GB frei, und Paperless soll
   nicht durch diesen Dienst verdrängt werden.
@@ -896,7 +912,8 @@ Fixtures einmalig aufzeichnen und ins Repository legen:
 - eine deutsche Rezeptseite, die `recipe-scrapers` kennt
 - eine Seite mit JSON-LD, aber ohne Unterstützung durch `recipe-scrapers`
 - eine Seite ganz ohne strukturierte Daten
-- eine SRT-Untertiteldatei aus einem Kochvideo, dazu dieselbe als WebVTT
+- eine Aufzeichnung des Transkript-Endpunkts zu einem Kochvideo (Schnipsel mit Text,
+  Beginn und Dauer, so wie der Endpunkt antwortet)
 - ein kleines PDF mit Textebene und ein winziges JPEG (wenige Kilobyte, kein echtes
   Rezeptfoto nötig - der LLM-Aufruf ist ersetzt)
 
