@@ -44,6 +44,13 @@ def _extract_youtube_id(parsed) -> str | None:
     return None
 
 
+def youtube_video_id(url: str) -> str | None:
+    """Die Video-ID einer YouTube-Adresse, oder None, wenn keine darin steckt (etwa bei
+    einem Kanal- oder Playlist-Link). `sources/youtube.py` braucht sie fuer den
+    Transkript-Endpunkt und liest sie hier statt mit einem zweiten Parser."""
+    return _extract_youtube_id(urlparse(url.strip()))
+
+
 def normalize_url(url: str) -> str:
     parsed = urlparse(url.strip())
     host = parsed.netloc.lower()

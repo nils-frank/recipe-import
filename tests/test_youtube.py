@@ -1,39 +1,53 @@
-"""Tests für sources/youtube.py an aufgezeichneten Untertitel-Fixtures (DESIGN.md §12,
-vierte Fixture). `subprocess.run` ersetzt den `yt-dlp`-Aufruf, kein Netzzugriff.
+"""Tests für sources/youtube.py, ohne Netzzugriff (DESIGN.md §12).
 
-Zwei Formate, weil der Dienst ohne `ffmpeg` auskommt und deshalb kein
-`--convert-subs srt` mehr aufruft: WebVTT ist das Format, das YouTube tatsächlich
-liefert, SRT bleibt als früher aufgezeichnete Form gültig. Die VTT-Fixture ist aus der
-SRT-Aufzeichnung desselben Videos erzeugt, samt WebVTT-Kopf, Cue-Einstellungen und den
-für Auto-Untertitel typischen Wort-Zeitmarken.
+Zwei Dinge werden ersetzt: der Transkript-Endpunkt (`YouTubeTranscriptApi`) und der
+`yt-dlp`-Aufruf (`subprocess.run`). Beide Quellen sind seit
+openspec/changes/fix-youtube-transcript-fetch getrennt - die Untertitel kommen vom
+Endpunkt, Titel und Beschreibung von yt-dlp -, und die Tests prüfen genau das: jede
+Quelle für sich und der Fall, dass eine von beiden ausfällt.
 
-Die Fixture `youtube_maultaschen.de.srt` ist ein echtes automatisch erzeugtes deutsches
-Untertranskript eines Kochvideos - inklusive der für Auto-Untertitel typischen rollenden
-Dubletten, an denen `_srt_to_text` seine Entdopplung beweisen muss.
-
-Seit A15 (2026-08-23) fragt `fetch()` die Sprachen einzeln ab, weil `yt-dlp --sub-lang
-de,en` in einem Aufruf bei einem HTTP-429 fuer die zweite Sprache die gesamte Extraktion
-abbricht und dabei die schon geladene Datei der ersten Sprache verwirft (Befund A9). Die
-Tests dazu simulieren `subprocess.run` als Funktion, die pro Aufruf gezaehlt und
-unterschiedlich beantwortet werden kann.
+Die Fixture `youtube_maultaschen.de.snippets.json` ist eine echte Aufzeichnung des
+Transkript-Endpunkts zum deutschen Kochvideo `w8TmZzFExlg` (101 Schnipsel, automatisch
+erzeugte Untertitel, aufgezeichnet am 2026-10-22). Sie hat die Form, in der der Endpunkt
+antwortet: ein Schnipsel je Einblendung, ohne die rollenden Dubletten der früheren
+WebVTT-Aufzeichnung. Die Entdopplung wird deshalb an einer eigens gebauten Rolle geprüft
+(`test_snippets_to_text_...`), die die Form zeigt, die ein Untertitelgleis trotzdem haben
+kann.
 """
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
+import requests
+from youtube_transcript_api import (
+    AgeRestricted,
+    FetchedTranscript,
+    FetchedTranscriptSnippet,
+    InvalidVideoId,
+    IpBlocked,
+    NoTranscriptFound,
+    PoTokenRequired,
+    RequestBlocked,
+    TranscriptsDisabled,
+    VideoUnavailable,
+    VideoUnplayable,
+    YouTubeDataUnparsable,
+    YouTubeRequestFailed,
+    YouTubeTranscriptApiException,
+)
 
 import app as app_module
 from sources import SourceError
+from sources import youtube as youtube_module
 from sources.youtube import NoTranscriptError, ThrottledError, fetch, subprocess
 
 FIXTURES = Path(__file__).parent / "fixtures"
-SRT_FIXTURE = FIXTURES / "youtube_maultaschen.de.srt"
-VTT_FIXTURE = FIXTURES / "youtube_maultaschen.de.vtt"
+SNIPPETS_FIXTURE = FIXTURES / "youtube_maultaschen.de.snippets.json"
 VIDEO_ID = "w8TmZzFExlg"
 TITLE = "Deutsch kochen für Anfänger | Maultaschen"
+DESCRIPTION = "Ein Rezept aus der Klinikküche."
 
 
 class _FakeCompletedProcess:
@@ -43,22 +57,62 @@ class _FakeCompletedProcess:
         self.stderr = stderr
 
 
-def _info_line(
-    video_id: str = VIDEO_ID, title: str = TITLE, description: str = "Ein Rezept aus der Klinikküche."
-) -> str:
+def _info_line(video_id: str = VIDEO_ID, title: str = TITLE, description: str = DESCRIPTION) -> str:
     return json.dumps({"id": video_id, "title": title, "description": description}) + "\n"
 
 
-def test_fetch_reads_transcript_from_recorded_srt(monkeypatch):
-    calls = []
+def _recorded_snippets() -> list[FetchedTranscriptSnippet]:
+    raw = json.loads(SNIPPETS_FIXTURE.read_text(encoding="utf-8"))
+    return [
+        FetchedTranscriptSnippet(text=s["text"], start=s["start"], duration=s["duration"])
+        for s in raw
+    ]
 
-    def fake_run(cmd, cwd, capture_output, text, timeout):
-        calls.append(cmd)
-        # yt-dlp legt die Untertiteldatei im Arbeitsverzeichnis ab, bevor fetch() sie liest.
-        shutil.copy(SRT_FIXTURE, Path(cwd) / f"{VIDEO_ID}.de.srt")
-        return _FakeCompletedProcess(stdout=_info_line())
+
+def _fetched(snippets: list[FetchedTranscriptSnippet], language_code: str = "de") -> FetchedTranscript:
+    return FetchedTranscript(
+        snippets=snippets,
+        video_id=VIDEO_ID,
+        language="German (auto-generated)",
+        language_code=language_code,
+        is_generated=True,
+    )
+
+
+def _stub_transcript(monkeypatch, answer, calls: list | None = None) -> None:
+    """Ersetzt den Transkript-Endpunkt. `answer` ist entweder ein `FetchedTranscript`
+    oder eine Ausnahme, die der Aufruf wirft."""
+
+    class _FakeApi:
+        def __init__(self, http_client=None, proxy_config=None):
+            self.http_client = http_client
+
+        def fetch(self, video_id, languages=("en",), preserve_formatting=False):
+            if calls is not None:
+                calls.append((video_id, tuple(languages)))
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    monkeypatch.setattr(youtube_module, "YouTubeTranscriptApi", _FakeApi)
+
+
+def _stub_yt_dlp(monkeypatch, process: _FakeCompletedProcess, calls: list | None = None) -> None:
+    def fake_run(cmd, capture_output, text, timeout):
+        if calls is not None:
+            calls.append(cmd)
+        return process
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+
+
+# --- Der Normalfall -----------------------------------------------------------------
+
+
+def test_fetch_reads_transcript_from_recorded_snippets(monkeypatch):
+    transcript_calls: list = []
+    _stub_transcript(monkeypatch, _fetched(_recorded_snippets()), transcript_calls)
+    _stub_yt_dlp(monkeypatch, _FakeCompletedProcess(stdout=_info_line()))
 
     result = fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
 
@@ -67,115 +121,225 @@ def test_fetch_reads_transcript_from_recorded_srt(monkeypatch):
     assert result.title == TITLE
     assert "Maultaschen" in result.text
     assert "Heidelberg" in result.text
-    # Rollende Auto-Untertitel-Dubletten müssen entfernt sein (siehe _srt_to_text).
-    assert result.text.count("Im St. Elisabeth Klinikum in Heidelberg.") == 1
-    # Deutsch hat sofort eine Datei ergeben: kein zweiter Aufruf fuer Englisch (DESIGN.md
-    # §6 - "das spart auch den Aufruf, der die Drosselung überhaupt auslöst").
+    # Titel und Beschreibung stehen vor dem Transkript im Rohtext.
+    assert result.text.startswith(TITLE)
+    assert DESCRIPTION in result.text
+    # Deutsch zuerst, Englisch als Rückfall - in genau einem Aufruf (DESIGN.md §6).
+    assert transcript_calls == [(VIDEO_ID, ("de", "en"))]
+
+
+def test_fetch_passes_no_subtitle_flags_to_yt_dlp(monkeypatch):
+    """yt-dlp holt nur noch Metadaten. Würde hier wieder ein Untertitelschalter
+    mitgehen, liefe der Aufruf in die PO-Token-Abweisung, die diese Änderung
+    umgeht."""
+    calls: list = []
+    _stub_transcript(monkeypatch, _fetched(_recorded_snippets()))
+    _stub_yt_dlp(monkeypatch, _FakeCompletedProcess(stdout=_info_line()), calls)
+
+    fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+
     assert len(calls) == 1
-    assert calls[0][calls[0].index("--sub-lang") + 1] == "de"
+    cmd = calls[0]
+    assert "--skip-download" in cmd
+    assert "--print-json" in cmd
+    for flag in ("--write-auto-sub", "--write-sub", "--sub-lang", "--sub-format", "--convert-subs"):
+        assert flag not in cmd, f"{flag} gehört nicht mehr in den Aufruf"
 
 
-def test_fetch_reads_transcript_from_recorded_vtt(monkeypatch):
-    def fake_run(cmd, cwd, capture_output, text, timeout):
-        # Ohne --convert-subs legt yt-dlp die Datei so ab, wie YouTube sie liefert: .vtt.
-        assert "--convert-subs" not in cmd, "kein ffmpeg im Image, siehe DESIGN.md §2"
-        shutil.copy(VTT_FIXTURE, Path(cwd) / f"{VIDEO_ID}.de.vtt")
-        return _FakeCompletedProcess(stdout=_info_line())
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://www.youtube.com/watch?v={VIDEO_ID}",
+        f"https://youtu.be/{VIDEO_ID}",
+        f"https://www.youtube.com/shorts/{VIDEO_ID}",
+        f"https://m.youtube.com/watch?v={VIDEO_ID}&feature=share",
+    ],
+)
+def test_fetch_finds_the_video_id_in_every_url_shape(monkeypatch, url):
+    transcript_calls: list = []
+    _stub_transcript(monkeypatch, _fetched(_recorded_snippets()), transcript_calls)
+    _stub_yt_dlp(monkeypatch, _FakeCompletedProcess(stdout=_info_line()))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = fetch(url)
 
-    result = fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
-
+    assert transcript_calls[0][0] == VIDEO_ID
     assert result.stage == "transcript"
-    assert result.recipe is None
-    assert "Maultaschen" in result.text
-    assert "Heidelberg" in result.text
-    # WebVTT-Kopf und Cue-Einstellungen dürfen nicht im Transkript landen.
-    assert "WEBVTT" not in result.text
-    assert "align:start" not in result.text
-    # Wort-Zeitmarken (<00:00:26.390><c> Wort</c>) sind entfernt, das Wort bleibt.
-    assert "<c>" not in result.text
-    assert "00:00:26.390" not in result.text
-    assert result.text.count("Im St. Elisabeth Klinikum in Heidelberg.") == 1
 
 
-def test_fetch_raises_no_transcript_error_without_subtitles(monkeypatch):
-    calls = []
+def test_fetch_rejects_a_youtube_url_without_a_video(monkeypatch):
+    # Kanal- oder Playlist-Link: classify() nennt die Quelle "youtube", ein Video steckt
+    # aber nicht darin - dann wird der Endpunkt gar nicht erst gefragt.
+    def kein_aufruf(*args, **kwargs):
+        raise AssertionError("der Transkript-Endpunkt darf hier nicht gefragt werden")
 
-    def fake_run(cmd, cwd, capture_output, text, timeout):
-        calls.append(cmd)
-        # Kein Untertitel wird ins Arbeitsverzeichnis geschrieben, fuer keine der
-        # beiden Sprachen.
-        info = {"id": "ohneUntertitel", "title": "Ohne Untertitel", "description": ""}
-        return _FakeCompletedProcess(stdout=json.dumps(info) + "\n")
+    monkeypatch.setattr(youtube_module, "YouTubeTranscriptApi", kein_aufruf)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(SourceError):
+        fetch("https://www.youtube.com/@einkanal")
+
+
+# --- Fliesstext aus Schnipseln -------------------------------------------------------
+
+
+def test_snippets_to_text_drops_rolling_duplicates_and_newlines():
+    snippets = [
+        FetchedTranscriptSnippet(text="Im St. Elisabeth Klinikum in Heidelberg.", start=0.0, duration=1.0),
+        FetchedTranscriptSnippet(text="Im St. Elisabeth Klinikum in Heidelberg.", start=1.0, duration=1.0),
+        FetchedTranscriptSnippet(text="Medizinstudentin Vivian Deu\nin ihrem", start=2.0, duration=1.0),
+        FetchedTranscriptSnippet(text="   ", start=3.0, duration=1.0),
+        FetchedTranscriptSnippet(text=" Praxissemester.", start=4.0, duration=1.0),
+    ]
+
+    text = youtube_module._snippets_to_text(snippets)
+
+    assert text.count("Im St. Elisabeth Klinikum in Heidelberg.") == 1
+    assert "\n" not in text
+    assert text.endswith("Medizinstudentin Vivian Deu in ihrem Praxissemester.")
+
+
+def test_fetch_raises_no_transcript_error_for_an_empty_transcript(monkeypatch):
+    _stub_transcript(monkeypatch, _fetched([FetchedTranscriptSnippet(text="  ", start=0.0, duration=1.0)]))
+    _stub_yt_dlp(monkeypatch, _FakeCompletedProcess(stdout=_info_line()))
 
     with pytest.raises(NoTranscriptError):
-        fetch("https://www.youtube.com/watch?v=ohneUntertitel")
-
-    # Beide Sprachen wurden einzeln versucht, bevor aufgegeben wurde.
-    assert len(calls) == 2
-    langs = [cmd[cmd.index("--sub-lang") + 1] for cmd in calls]
-    assert langs == ["de", "en"]
+        fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
 
 
-def test_fetch_falls_back_to_english_after_german_throttled(monkeypatch):
-    """Kernszenario von A15: der erste Aufruf (Deutsch) liefert HTTP 429 und keine
-    Datei, der zweite (Englisch) gelingt. Das Video darf trotzdem durchlaufen."""
-    calls = []
-
-    def fake_run(cmd, cwd, capture_output, text, timeout):
-        lang = cmd[cmd.index("--sub-lang") + 1]
-        calls.append(lang)
-        if lang == "de":
-            return _FakeCompletedProcess(
-                returncode=1,
-                stderr="ERROR: unable to download video subtitles: HTTP Error 429: Too Many Requests",
-            )
-        shutil.copy(VTT_FIXTURE, Path(cwd) / f"{VIDEO_ID}.en.vtt")
-        return _FakeCompletedProcess(stdout=_info_line())
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    result = fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
-
-    assert calls == ["de", "en"]
-    assert result.stage == "transcript"
-    assert "Maultaschen" in result.text
+# --- Die Metadatenquelle fällt aus ---------------------------------------------------
 
 
-def test_fetch_keeps_already_downloaded_file_despite_later_failure(monkeypatch):
-    """DESIGN.md §6, Punkt 2: eine schon heruntergeladene Datei darf nicht verloren
-    gehen, nur weil derselbe Aufruf danach (z.B. beim Ausgeben der Metadaten)
-    trotzdem als Fehlschlag zurueckkommt."""
-
-    def fake_run(cmd, cwd, capture_output, text, timeout):
-        shutil.copy(SRT_FIXTURE, Path(cwd) / f"{VIDEO_ID}.de.srt")
-        return _FakeCompletedProcess(
-            returncode=1,
-            stderr="ERROR: HTTP Error 429: Too Many Requests",
-        )
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+def test_fetch_survives_a_failing_metadata_call(monkeypatch):
+    """Ein Fehlschlag von yt-dlp ist kein Fehlschlag des Imports: das Transkript allein
+    ist der Rohtext, auf den es ankommt."""
+    _stub_transcript(monkeypatch, _fetched(_recorded_snippets()))
+    _stub_yt_dlp(monkeypatch, _FakeCompletedProcess(returncode=1, stderr="ERROR: boom"))
 
     result = fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
 
     assert result.stage == "transcript"
+    assert result.title is None
     assert "Heidelberg" in result.text
 
 
-def test_fetch_raises_throttled_error_when_both_languages_are_rate_limited(monkeypatch):
-    def fake_run(cmd, cwd, capture_output, text, timeout):
-        return _FakeCompletedProcess(
-            returncode=1,
-            stderr="ERROR: unable to download video subtitles: HTTP Error 429: Too Many Requests",
-        )
+def test_fetch_survives_unparsable_metadata(monkeypatch):
+    _stub_transcript(monkeypatch, _fetched(_recorded_snippets()))
+    _stub_yt_dlp(monkeypatch, _FakeCompletedProcess(stdout="kein JSON\n"))
 
+    result = fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+
+    assert result.title is None
+    assert "Maultaschen" in result.text
+
+
+def test_fetch_survives_a_metadata_timeout(monkeypatch):
+    def fake_run(cmd, capture_output, text, timeout):
+        assert timeout == youtube_module.YT_DLP_TIMEOUT
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    _stub_transcript(monkeypatch, _fetched(_recorded_snippets()))
     monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+
+    assert result.title is None
+    assert "Heidelberg" in result.text
+
+
+def test_fetch_keeps_the_transcript_when_the_description_is_empty(monkeypatch):
+    _stub_transcript(monkeypatch, _fetched(_recorded_snippets()))
+    _stub_yt_dlp(monkeypatch, _FakeCompletedProcess(stdout=_info_line(description="")))
+
+    result = fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+
+    assert result.title == TITLE
+    assert "Heidelberg" in result.text
+
+
+# --- Einordnung der Fehlschläge ------------------------------------------------------
+
+
+class _UnbekannterFehler(YouTubeTranscriptApiException):
+    """Eine Ausnahme, die die Bibliothek heute noch nicht wirft - sie muss trotzdem als
+    Drosselung gelten, nicht als "keine Untertitel"."""
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        NoTranscriptFound(VIDEO_ID, ["de", "en"], None),
+        TranscriptsDisabled(VIDEO_ID),
+        VideoUnavailable(VIDEO_ID),
+        VideoUnplayable(VIDEO_ID, "Grund", []),
+        InvalidVideoId(VIDEO_ID),
+        AgeRestricted(VIDEO_ID),
+    ],
+    ids=lambda exc: type(exc).__name__,
+)
+def test_an_answer_about_the_video_is_permanent(monkeypatch, exc):
+    _stub_transcript(monkeypatch, exc)
+
+    with pytest.raises(NoTranscriptError):
+        fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RequestBlocked(VIDEO_ID),
+        IpBlocked(VIDEO_ID),
+        PoTokenRequired(VIDEO_ID),
+        YouTubeRequestFailed(VIDEO_ID, requests.exceptions.HTTPError("HTTP Error 429")),
+        YouTubeDataUnparsable(VIDEO_ID),
+        _UnbekannterFehler(),
+        requests.RequestException("Verbindung weg"),
+    ],
+    ids=lambda exc: type(exc).__name__,
+)
+def test_every_other_refusal_is_a_throttle(monkeypatch, exc):
+    """Umgekehrte Vorgabe seit dem Befund vom 2026-10-20: endgültig ist nur, was YouTube
+    über das Video sagt. Alles andere - Drosselung, Botprüfung, verlangter
+    Herkunftsnachweis, veränderte Antwortform, Netzfehler - ist eine Drosselung und wird
+    geparkt."""
+    _stub_transcript(monkeypatch, exc)
 
     with pytest.raises(ThrottledError):
         fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+
+
+def test_a_bot_check_is_queued_with_the_throttle_wording(monkeypatch):
+    """Der Fall, der am 2026-10-20 live schiefging: YouTube verlangte eine Botprüfung,
+    und der Mensch bekam "Das Video hat keine Untertitel" zu einem Video mit Untertiteln
+    in über hundert Sprachen."""
+    _stub_transcript(monkeypatch, RequestBlocked(VIDEO_ID))
+
+    with pytest.raises(ThrottledError) as erhoben:
+        fetch(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+
+    exc = erhoben.value
+    assert app_module.is_transient(exc) is True
+    assert app_module._describe_queued(exc) == (
+        "YouTube drosselt gerade die Untertitel. Ich versuche es automatisch später noch einmal."
+    )
+    assert "keine Untertitel" not in app_module._describe_queued(exc)
+
+
+def test_the_transcript_session_carries_a_timeout(monkeypatch):
+    """Ohne eigenes Zeitlimit hätte der Aufruf gar keines - `requests` wartet dann
+    unbegrenzt und die Importstufe mit ihm."""
+    captured: dict = {}
+
+    def fake_request(self, method, url, **kwargs):
+        captured.update(kwargs)
+        return "antwort"
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+
+    youtube_module._TimeoutSession().get("https://example.invalid")
+
+    assert captured["timeout"] == youtube_module.TRANSCRIPT_TIMEOUT
+
+
+# --- Was app.py von diesen Klassen erwartet ------------------------------------------
 
 
 def test_throttled_error_is_a_source_error():
@@ -187,7 +351,7 @@ def test_throttled_error_is_a_source_error():
 def test_throttled_error_maps_to_the_spec_wording():
     # app.py._describe_source_error muss den wörtlichen Text aus DESIGN.md §7 liefern,
     # nicht "kein Rezept gefunden" (A15).
-    exc = ThrottledError("YouTube drosselt gerade die Untertitel fuer https://x")
+    exc = ThrottledError("YouTube gibt die Untertitel fuer https://x gerade nicht heraus")
     assert app_module._describe_source_error(exc) == (
         "YouTube drosselt gerade die Untertitel. Bitte später erneut teilen."
     )
@@ -197,3 +361,10 @@ def test_no_transcript_error_is_a_source_error():
     # app.py unterscheidet Fehlerarten am Klassennamen (DESIGN.md §7) - NoTranscriptError
     # muss deshalb eine SourceError-Unterklasse bleiben.
     assert issubclass(NoTranscriptError, SourceError)
+
+
+def test_no_transcript_error_maps_to_the_spec_wording():
+    exc = NoTranscriptError("Keine Untertitel (de/en) fuer https://x")
+    assert app_module._describe_source_error(exc) == (
+        "Das Video hat keine Untertitel, daraus lässt sich kein Rezept lesen."
+    )
