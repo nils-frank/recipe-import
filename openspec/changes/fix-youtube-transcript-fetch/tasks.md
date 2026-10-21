@@ -2,11 +2,11 @@
 
 ## 1. Dependency
 
-- [ ] 1.1 Add `youtube-transcript-api==1.2.4` to `requirements.txt` with a comment in the
+- [x] 1.1 Add `youtube-transcript-api==1.2.4` to `requirements.txt` with a comment in the
   style of the existing blocks (date, why it is there, arm64 wheel), and verify
   `pip install -r requirements.txt` resolves in a clean virtual environment without a
   compiler
-- [ ] 1.2 Raise the `yt-dlp` pin from `2026.8.19` to `2026.10.21` and verify the suite
+- [x] 1.2 Raise the `yt-dlp` pin from `2026.8.19` to `2026.10.21` and verify the suite
   still passes against it (`pytest -q`)
 
 ## 2. Transcript source
