@@ -10,8 +10,15 @@ requests==2.34.2
 recipe-scrapers==15.12.0
 extruct==0.18.0
 trafilatura==2.2.0
-yt-dlp==2026.8.19
+yt-dlp==2026.10.21
 # Nachgetragen für den Uploadweg (A12, SPEC.md §2/§6), Stände vom 2026-08-23. Beide
 # sind reine py3-none-any-Wheels, also auch auf arm64 ohne Compiler installierbar.
 pypdf==6.16.1
 python-multipart==0.0.32
+# Nachgetragen für die Untertitel (openspec/changes/fix-youtube-transcript-fetch,
+# Stand vom 2026-10-22): YouTube beantwortet die von yt-dlp benutzte
+# `api/timedtext`-Adresse nur noch mit einem Herkunftsnachweis (PO-Token), ohne ihn mit
+# HTTP 429. Der Transkript-Endpunkt, den dieses Paket anspricht, verlangt keinen. Reines
+# py3-none-any-Wheel, Abhängigkeiten `requests` (schon da) und `defusedxml` (ebenfalls
+# reines Python), also auch auf arm64 ohne Compiler installierbar.
+youtube-transcript-api==1.2.4
