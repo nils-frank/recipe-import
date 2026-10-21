@@ -56,8 +56,8 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run `pytest -q` and `ruff check .` on the finished change and verify both pass
-- [ ] 5.2 Run `openspec validate fix-youtube-transcript-fetch --strict` and
+- [x] 5.1 Run `pytest -q` and `ruff check .` on the finished change and verify both pass
+- [x] 5.2 Run `openspec validate fix-youtube-transcript-fetch --strict` and
   verify it reports no errors
 - [ ] 5.3 Deployment side, in the homelab repository: rebuild and restart the image, then
   re-share `https://www.youtube.com/watch?v=XLd6yTtwCqo` and
