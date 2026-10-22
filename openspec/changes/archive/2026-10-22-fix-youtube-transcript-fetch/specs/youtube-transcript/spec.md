@@ -90,10 +90,12 @@ throttle.
   video having no captions
 - **THEN** the failure is reported as a throttle
 
-### Requirement: Title and description survive a caption failure being distinguished
+### Requirement: Title and description are obtained independently of the captions
 
-The title and description are obtained independently of the captions. A failure to obtain
-title and description SHALL NOT be reported as a video without subtitles, and the absence
+The title and description SHALL be obtained by a request separate from the one that
+obtains the captions, and the two SHALL fail independently of each other. A failure to
+obtain title and description SHALL NOT be reported as a video without subtitles, and the
+absence
 of a description SHALL NOT prevent an import whose captions were obtained: the captions
 alone are sufficient raw text.
 
