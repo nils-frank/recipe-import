@@ -59,8 +59,14 @@
 - [x] 5.1 Run `pytest -q` and `ruff check .` on the finished change and verify both pass
 - [x] 5.2 Run `openspec validate fix-youtube-transcript-fetch --strict` and
   verify it reports no errors
-- [ ] 5.3 Deployment side, in the homelab repository: rebuild and restart the image, then
+- [x] 5.3 Deployment side, in the homelab repository: rebuild and restart the image, then
   re-share `https://www.youtube.com/watch?v=XLd6yTtwCqo` and
   `https://www.youtube.com/watch?v=gRwcWgQ7YVI` and record in the
   `recipe-import-*` notes that both reach Mealie. No compose or environment change is part
   of this change
+
+  Done on 2026-10-22, recorded in the homelab repository as row A19 of
+  `recipe-import-fortschritt.md`. Both videos now get their captions from the
+  transcript endpoint; `gRwcWgQ7YVI` reaches Mealie as `tiramisu-chia-pudding`,
+  while `XLd6yTtwCqo` is rejected by the LLM stage as a clip that names ingredients
+  without amounts or steps - a correct verdict that no longer involves captions.
