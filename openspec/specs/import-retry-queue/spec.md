@@ -17,14 +17,17 @@ failures are transient:
 
 - the LLM provider answered with a transient HTTP status (429, 500, 502, 503, 504) on
   both the initial call and its immediate in-request retry;
-- YouTube throttled the subtitle download;
+- YouTube refused to hand over a video's captions - by rate limiting the request, by
+  demanding proof that the caller is not a bot, or by any other refusal that is not an
+  answer about the video's content;
 - Mealie could not be reached at all (connection failure, DNS failure, or timeout).
 
 All other failures are permanent and SHALL keep their current behaviour: the import is
 marked failed and a single "Import fehlgeschlagen" notification is sent with the existing
-wording. Permanent failures include: no recipe found in the source, no subtitles on the
-video, an unreadable PDF, an unsupported file type, a model answer that does not match
-the schema after its second attempt, and any Mealie response that carried an HTTP status.
+wording. Permanent failures include: no recipe found in the source, YouTube answering
+that the video has no captions in German or English, an unreadable PDF, an unsupported
+file type, a model answer that does not match the schema after its second attempt, and
+any Mealie response that carried an HTTP status.
 
 #### Scenario: LLM at capacity
 
@@ -34,8 +37,15 @@ the schema after its second attempt, and any Mealie response that carried an HTT
 
 #### Scenario: YouTube throttles subtitles
 
-- **WHEN** the subtitle download for a video is rejected as throttled
+- **WHEN** the caption request for a video is rejected as throttled
 - **THEN** the import is queued for a later retry
+
+#### Scenario: YouTube demands a bot check
+
+- **WHEN** the caption request for a video is answered with a demand to sign in to
+  confirm the caller is not a bot
+- **THEN** the import is queued for a later retry
+- **AND** it is not marked failed as a video without subtitles
 
 #### Scenario: Mealie unreachable
 
